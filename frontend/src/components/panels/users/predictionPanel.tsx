@@ -17,6 +17,16 @@ type Keypoint = {
 
 // Type definitions for analysis results
 type AnalysisResult = {
+  dental_analysis?: DentalAnalysis;
+  roi?: {
+    model?: string;
+    threshold?: number;
+    used_source?: string;
+    impacted_sides?: string[];
+    overall_impacted?: boolean;
+    prediction_result?: string;
+    sides?: Record<string, { prob: number; impacted: boolean; bbox: number[] }>;
+  };
   side_analyses?: {
     left?: {
       sector_analysis?: {
@@ -119,6 +129,36 @@ type AnalysisResult = {
   lateral_axis?: unknown;
 };
 
+// Types for ROI-gated dental analysis
+type DentalAngle = { value: number; difficulty: string };
+type DentalAnglesAndDistances = {
+  angle_with_midline?: DentalAngle;
+  angle_with_lateral?: DentalAngle;
+  angle_with_occlusal?: DentalAngle;
+  distance_to_occlusal?: number;
+  distance_to_midline?: number;
+};
+type DentalSector = { sector: number; impaction_type: string };
+type DentalThreeFactor = {
+  overlap_with_lateral: string;
+  vertical_height: string;
+  root_apex_position: string;
+  eruption_difficulty: string;
+};
+type DentalSide = {
+  side: string;
+  skipped: boolean;
+  reason?: string | null;
+  sector_classification?: DentalSector;
+  three_factor_assessment?: DentalThreeFactor;
+  angles_and_distances?: DentalAnglesAndDistances;
+};
+type DentalAnalysis = {
+  right?: DentalSide;
+  left?: DentalSide;
+  overlay_image?: string;
+};
+
 // Type definitions for detection results
 type DetectionResult = {
   id: string;
@@ -147,10 +187,9 @@ const PredictionPanel = () => {
   const [resultImage, setResultImage] = useState<string>("");
   const [segmentationImage, setSegmentationImage] = useState<string>("");
   const [activeSide, setActiveSide] = useState<string>("right");
+  const [dentalOverlayImage, setDentalOverlayImage] = useState<string>("");
 
-  // State for interactive view
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [showInteractive, setShowInteractive] = useState<boolean>(false);
+  // State for interactive view (modal open/close)
   const [isInteractiveModalOpen, setIsInteractiveModalOpen] =
     useState<boolean>(false);
 
@@ -173,7 +212,16 @@ const PredictionPanel = () => {
         const response = await axiosInstance.get(`/detection/${detectionId}`);
 
         if (response.data.status === "success") {
-          setResult(response.data.detection);
+          const det = response.data.detection;
+          // If backend returned combined final_prediction and roi, merge into analysis for display
+          if (response.data.final_prediction && det?.analysis) {
+            det.prediction_result = response.data.final_prediction;
+            det.analysis.prediction_result = response.data.final_prediction;
+            if (response.data.roi) {
+              (det.analysis as any).roi = response.data.roi;
+            }
+          }
+          setResult(det);
 
           // Set segmentation data if available
           if (response.data.detection.segmentation) {
@@ -202,6 +250,21 @@ const PredictionPanel = () => {
           setResultImage(
             `${axiosInstance.defaults.baseURL}/results/${resultFilename}`,
           );
+
+          // Set dental overlay if available in analysis
+          try {
+            const dental = det?.analysis?.dental_analysis;
+            const overlayName = dental?.overlay_image;
+            if (overlayName) {
+              setDentalOverlayImage(
+                `${axiosInstance.defaults.baseURL}/results/${overlayName}`,
+              );
+            } else {
+              setDentalOverlayImage("");
+            }
+          } catch (_) {
+            setDentalOverlayImage("");
+          }
           setTimeout(() => setLoading(false), 200);
         } else {
           setError(
@@ -238,9 +301,14 @@ const PredictionPanel = () => {
   };
 
   // Export results to PDF
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     if (result) {
-      generatePDF(result);
+      await generatePDF(result, {
+        originalImage,
+        resultImage,
+        segmentationImage,
+        dentalOverlayImage,
+      });
     }
   };
 
@@ -253,7 +321,6 @@ const PredictionPanel = () => {
 
   // Open interactive view in fullscreen modal
   const openInteractiveModal = () => {
-    setShowInteractive(true);
     setIsInteractiveModalOpen(true);
   };
 
@@ -496,6 +563,39 @@ const PredictionPanel = () => {
           </div>
         )}
 
+        {/* Dental Overlay Image (if available) */}
+        {dentalOverlayImage && (
+          <div className="mt-6">
+            <div className="border rounded-xl p-4">
+              <div className="flex justify-between items-center mb-3">
+                <div className="poppins text-lg font-medium">
+                  ROI-Guided Dental Overlay
+                </div>
+                <button
+                  className="text-sm px-3 py-1 rounded-lg bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200 cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openImageModal(dentalOverlayImage, "ROI-Guided Dental Overlay");
+                  }}
+                >
+                  <i className="fa-solid fa-expand mr-1"></i> Full Size
+                </button>
+              </div>
+              <div className="flex justify-center">
+                <img
+                  src={dentalOverlayImage}
+                  alt="Dental overlay"
+                  className="max-h-80 object-contain hover:opacity-90 transition-opacity cursor-pointer"
+                  onClick={() => openImageModal(dentalOverlayImage, "ROI-Guided Dental Overlay")}
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).src = "/image-error.png";
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Prediction Summary */}
         <div className="mt-8 border rounded-xl p-6">
           <div className="poppins text-lg font-medium mb-4">
@@ -578,7 +678,71 @@ const PredictionPanel = () => {
               Detailed Dental Analysis
             </div>
 
-            {/* Sector Analysis */}
+            {/* ROI Classification Summary */}
+            {result.analysis.roi && (
+              <div className="mb-6">
+                <div className="poppins font-medium text-base mb-2">
+                  ROI Classification (Impaction)
+                </div>
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="poppins font-medium">Used Source:</div>
+                    <div className="poppins col-span-2 capitalize">
+                      {result.analysis.roi.used_source || "-"}
+                    </div>
+
+                    <div className="poppins font-medium">Impacted sides:</div>
+                    <div className="poppins col-span-2">
+                      {result.analysis.roi.impacted_sides &&
+                      result.analysis.roi.impacted_sides.length > 0
+                        ? result.analysis.roi.impacted_sides.join(", ")
+                        : "None"}
+                    </div>
+
+                    {/* Per-side probabilities */}
+                    {result.analysis.roi.sides && (
+                      <>
+                        {Object.entries(result.analysis.roi.sides).map(
+                          ([side, info]) => (
+                            <div key={side} className="col-span-3">
+                              <div className="flex items-center justify-between">
+                                <div className="poppins font-medium capitalize">
+                                  {side} probability
+                                </div>
+                                <div
+                                  className={`poppins text-sm font-medium ${
+                                    info.impacted
+                                      ? "text-red-600"
+                                      : "text-green-600"
+                                  }`}
+                                >
+                                  {info.impacted ? "Impacted" : "Normal"}
+                                </div>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                                <div
+                                  className={`h-2.5 rounded-full ${
+                                    info.prob >= (result.analysis.roi?.threshold ?? 0.5)
+                                      ? "bg-red-500"
+                                      : "bg-green-500"
+                                  }`}
+                                  style={{ width: `${Math.round(info.prob * 100)}%` }}
+                                ></div>
+                              </div>
+                              <div className="poppins text-xs text-gray-500 mt-1">
+                                {Math.round(info.prob * 100)}%
+                              </div>
+                            </div>
+                          ),
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Legacy Sector Analysis (kept for backward compatibility) */}
             {result.analysis.sector_analysis && (
               <div className="mb-6">
                 <div className="poppins font-medium text-base mb-2">
@@ -614,7 +778,7 @@ const PredictionPanel = () => {
               </div>
             )}
 
-            {/* Canine Assessment */}
+            {/* Legacy Canine Assessment (kept for backward compatibility) */}
             {result.analysis.canine_assessment && (
               <div className="mb-6">
                 <h4 className="poppins font-medium text-base mb-2">
@@ -677,7 +841,7 @@ const PredictionPanel = () => {
               </div>
             )}
 
-            {/* Angle Measurements */}
+            {/* Legacy Angle Measurements (kept for backward compatibility) */}
             {result.analysis.angle_measurements &&
               Object.keys(result.analysis.angle_measurements).length > 0 && (
                 <div className="mb-6">
@@ -810,6 +974,141 @@ const PredictionPanel = () => {
                   </div>
                 </div>
               )}
+
+            {/* ROI-based Dental Analysis */}
+            {result.analysis.dental_analysis && (
+              <div className="mt-8">
+                <div className="poppins text-lg font-medium mb-2">
+                  ROI-based Dental Analysis
+                </div>
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  {(() => {
+                    const dental = result.analysis.dental_analysis as DentalAnalysis;
+                    const sides: Array<'right'|'left'> = ['right','left'].filter((s) => (dental as any)[s]) as any;
+                    if (sides.length === 0) {
+                      return <div className="text-gray-600">No ROI-based analysis available.</div>;
+                    }
+                    return (
+                      <div className={`grid gap-6 ${sides.length > 1 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`}>
+                        {sides.map((side) => {
+                          const sideData = (dental as any)[side] as DentalSide;
+                          return (
+                            <div key={side} className="border rounded-lg p-4">
+                              <div className="poppins font-medium mb-3 capitalize">{side} side</div>
+                              {sideData.skipped ? (
+                                <div className="p-3 bg-yellow-50 border-l-4 border-yellow-400 rounded">
+                                  <div className="text-yellow-700">
+                                    <i className="fa-solid fa-triangle-exclamation mr-2"></i>
+                                    Skipped analysis for this side: {sideData.reason || 'Unknown reason'}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-4">
+                                  {sideData.sector_classification && (
+                                    <div>
+                                      <div className="poppins font-medium text-base mb-2">Sector Analysis</div>
+                                      <div className="grid grid-cols-2 gap-4">
+                                        <div className="poppins font-medium">Sector:</div>
+                                        <div className="poppins">Sector {sideData.sector_classification.sector}</div>
+                                        <div className="poppins font-medium">Impaction Type:</div>
+                                        <div className="poppins font-medium">
+                                          {sideData.sector_classification.impaction_type === 'Palatal' ? (
+                                            <span className="poppins text-red-600">{sideData.sector_classification.impaction_type}</span>
+                                          ) : sideData.sector_classification.impaction_type === 'Mid-alveolar' ? (
+                                            <span className="poppins text-orange-600">{sideData.sector_classification.impaction_type}</span>
+                                          ) : (
+                                            <span>{sideData.sector_classification.impaction_type}</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {sideData.three_factor_assessment && (
+                                    <div>
+                                      <div className="poppins font-medium text-base mb-2">Three-factor Assessment</div>
+                                      <div className="grid grid-cols-2 gap-4">
+                                        <div className="poppins font-medium">Overlap with Lateral:</div>
+                                        <div className={sideData.three_factor_assessment.overlap_with_lateral === 'Yes' ? 'poppins text-red-600' : 'poppins text-green-600'}>
+                                          {sideData.three_factor_assessment.overlap_with_lateral}
+                                        </div>
+                                        <div className="poppins font-medium">Vertical Height:</div>
+                                        <div className={sideData.three_factor_assessment.vertical_height.includes('Difficult') ? 'poppins text-red-600' : 'poppins text-green-600'}>
+                                          {sideData.three_factor_assessment.vertical_height}
+                                        </div>
+                                        <div className="poppins font-medium">Root Apex Position:</div>
+                                        <div className={sideData.three_factor_assessment.root_apex_position.includes('Easy') ? 'poppins text-green-600' : 'poppins text-red-600'}>
+                                          {sideData.three_factor_assessment.root_apex_position}
+                                        </div>
+                                        <div className="poppins font-medium">Eruption Difficulty:</div>
+                                        <div className={sideData.three_factor_assessment.eruption_difficulty === 'Difficult' ? 'poppins text-red-600 font-medium' : 'poppins text-green-600 font-medium'}>
+                                          {sideData.three_factor_assessment.eruption_difficulty}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {sideData.angles_and_distances && (
+                                    <div>
+                                      <div className="poppins font-medium text-base mb-2">Angles and Distances</div>
+                                      <div className="grid grid-cols-3 gap-4">
+                                        {sideData.angles_and_distances.angle_with_midline && (
+                                          <>
+                                            <div className="poppins font-medium">Angle with Midline:</div>
+                                            <div className="poppins">{sideData.angles_and_distances.angle_with_midline.value.toFixed(2)}°</div>
+                                            <div className={`poppins font-medium ${sideData.angles_and_distances.angle_with_midline.difficulty === 'Difficult' ? 'poppins text-red-600' : 'poppins text-green-600'}`}>
+                                              {sideData.angles_and_distances.angle_with_midline.difficulty}
+                                            </div>
+                                          </>
+                                        )}
+
+                                        {sideData.angles_and_distances.angle_with_lateral && (
+                                          <>
+                                            <div className="poppins font-medium">Angle with Lateral Incisor:</div>
+                                            <div className="poppins">{sideData.angles_and_distances.angle_with_lateral.value.toFixed(2)}°</div>
+                                            <div className={`poppins font-medium ${sideData.angles_and_distances.angle_with_lateral.difficulty === 'Difficult' ? 'poppins text-red-600' : 'poppins text-green-600'}`}>
+                                              {sideData.angles_and_distances.angle_with_lateral.difficulty}
+                                            </div>
+                                          </>
+                                        )}
+
+                                        {sideData.angles_and_distances.angle_with_occlusal && (
+                                          <>
+                                            <div className="poppins font-medium">Angle with Occlusal Plane:</div>
+                                            <div className="poppins">{sideData.angles_and_distances.angle_with_occlusal.value.toFixed(2)}°</div>
+                                            <div className={`poppins font-medium ${sideData.angles_and_distances.angle_with_occlusal.difficulty === 'Difficult' ? 'poppins text-red-600' : 'poppins text-green-600'}`}>
+                                              {sideData.angles_and_distances.angle_with_occlusal.difficulty}
+                                            </div>
+                                          </>
+                                        )}
+
+                                        {sideData.angles_and_distances.distance_to_occlusal !== undefined && (
+                                          <>
+                                            <div className="poppins font-medium">Distance to Occlusal Plane:</div>
+                                            <div className="poppins col-span-2">{sideData.angles_and_distances.distance_to_occlusal?.toFixed(2)} pixel</div>
+                                          </>
+                                        )}
+
+                                        {sideData.angles_and_distances.distance_to_midline !== undefined && (
+                                          <>
+                                            <div className="poppins font-medium">Distance to Midline:</div>
+                                            <div className="poppins col-span-2">{sideData.angles_and_distances.distance_to_midline?.toFixed(2)} pixel</div>
+                                          </>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
 
             {/* Overall Assessment */}
             <div>

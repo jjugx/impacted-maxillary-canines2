@@ -4,7 +4,10 @@ import os
 import traceback
 from PIL import Image
 
-from services import keypoint_service, segmentation_service
+from services import keypoint_service, segmentation_service, roi_service, dental_analysis_service
+from config import db
+from models.keypoint import KeypointDetection
+import json
 
 prediction_bp = Blueprint('prediction', __name__)
 
@@ -81,12 +84,128 @@ def analyze_image():
                 segmentation_data=segmentation_results
             )
 
+            # Prepare keypoints dict for ROI fallback (if any were detected)
+            keypoints_dict = None
+            try:
+                if keypoint_results and isinstance(keypoint_results, dict):
+                    kpts = keypoint_results.get("keypoints") or []
+                    if kpts:
+                        keypoints_dict = {kp["label"]: {"x": kp["x"], "y": kp["y"]} for kp in kpts}
+            except Exception:
+                keypoints_dict = None
+
+            # Run ROI classifier to decide impacted vs normal at side-level
+            roi_threshold = float(current_app.config.get('ROI_THRESHOLD', 0.15))
+            roi_results = roi_service.predict_from_image(
+                image_path=image_path,
+                segmentation_data=segmentation_results,
+                keypoints_dict=keypoints_dict,
+                threshold=roi_threshold,
+            )
+
+            # Detailed dental analysis with ROI gating and measurements
+            dental_results = None
+            try:
+                if keypoints_dict:
+                    dental_results = dental_analysis_service.analyze(
+                        image_path=image_path,
+                        segmentation_data=segmentation_results,
+                        keypoints=keypoints_dict,
+                    )
+            except Exception as _:
+                current_app.logger.warning("Dental analysis failed; continuing without it")
+
+            # Build eruption summary (overall) if dental results available
+            eruption_summary = None
+            if isinstance(dental_results, dict):
+                right_es = dental_results.get('right', {}).get('eruption_summary') if dental_results.get('right') else None
+                left_es = dental_results.get('left', {}).get('eruption_summary') if dental_results.get('left') else None
+                overall_status = None
+                overall_label_th = None
+                overall_label_en = None
+                reasons = []
+                # Decision: if any side can_erupt is False -> cannot; else if any True -> can; else uncertain
+                side_values = [s for s in [right_es, left_es] if s]
+                if side_values:
+                    if any(s.get('can_erupt') is False for s in side_values):
+                        overall_status = False
+                        overall_label_th = 'ขึ้นไม่ได้'
+                        overall_label_en = 'Cannot erupt'
+                    elif any(s.get('can_erupt') is True for s in side_values):
+                        overall_status = True
+                        overall_label_th = 'ขึ้นได้'
+                        overall_label_en = 'Can erupt'
+                    else:
+                        overall_status = None
+                        overall_label_th = 'ไม่ทราบ'
+                        overall_label_en = 'Uncertain'
+                    for s in side_values:
+                        reasons.extend(s.get('reasons') or [])
+                eruption_summary = {
+                    'right': right_es,
+                    'left': left_es,
+                    'overall': {
+                        'can_erupt': overall_status,
+                        'label_th': overall_label_th,
+                        'label_en': overall_label_en,
+                        'reasons': reasons
+                    }
+                }
+
+            # Final decision: ROI decides Normal vs Impacted; keep severe-impacted override from keypoints
+            final_prediction = roi_results.get("prediction_result")
+            kp_pred = None
+            if keypoint_results and isinstance(keypoint_results, dict):
+                kp_pred = keypoint_results.get("prediction") or (keypoint_results.get("analysis") or {}).get("prediction_result")
+            if isinstance(kp_pred, str) and "severely" in kp_pred.lower():
+                final_prediction = kp_pred
+
+            # Persist final prediction and ROI results to the detection record for consistency with /detection fetch
+            try:
+                detection_id = keypoint_results.get("detection_id") if isinstance(keypoint_results, dict) else None
+                if detection_id:
+                    det = KeypointDetection.query.get(detection_id)
+                    if det:
+                        det.prediction_result = final_prediction
+                        # Merge ROI results into analysis_json under key 'roi'
+                        analysis = {}
+                        if det.analysis_json:
+                            try:
+                                analysis = json.loads(det.analysis_json)
+                            except Exception:
+                                analysis = {}
+                        analysis["roi"] = roi_results
+                        if dental_results is not None:
+                            analysis["dental_analysis"] = dental_results
+                        if eruption_summary is not None:
+                            analysis["eruption_summary"] = eruption_summary
+                        # Also mirror ROI-driven final decision into analysis for consumers using this field
+                        analysis["prediction_result"] = final_prediction
+                        det.analysis_json = json.dumps(analysis)
+                        db.session.commit()
+            except Exception as _:
+                current_app.logger.warning("Failed to persist ROI results to detection record")
+
+            # Update in-memory detection payload so clients relying on detection.analysis/prediction see the ROI-based final decision
+            if isinstance(keypoint_results, dict):
+                try:
+                    keypoint_results["prediction"] = final_prediction
+                    if isinstance(keypoint_results.get("analysis"), dict):
+                        keypoint_results["analysis"]["prediction_result"] = final_prediction
+                        keypoint_results["analysis"]["roi"] = roi_results
+                except Exception:
+                    pass
+
             # Combine results
             combined_results = {
                 'status': 'success',
                 'message': 'Image processed successfully',
                 'detection': keypoint_results,
-                'segmentation': segmentation_results
+                'segmentation': segmentation_results,
+                'roi': roi_results,
+                'dental_analysis': dental_results,
+                'eruption_summary': eruption_summary,
+                'final_prediction': final_prediction
             }
 
             return jsonify(combined_results)

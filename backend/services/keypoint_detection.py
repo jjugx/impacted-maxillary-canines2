@@ -50,7 +50,7 @@ class KeypointDetectionService:
         image_file.save(file_path)
         return file_path
 
-    def detect_keypoints(self, image_path, user_id, segmentation_data=None):
+    def detect_keypoints(self, image_path, user_id, segmentation_data=None, roi_results=None):
         """Process image with YOLO and detect keypoints"""
         try:
             # Check if model is loaded
@@ -204,8 +204,12 @@ class KeypointDetectionService:
                     found_points_count = len([p for p in side_required_points if p in keypoints_dict])
                     coverage_ratio = found_points_count / required_points_count
 
-                    # Perform dental analysis
-                    analysis_results = self.perform_dental_analysis(keypoints_dict, segmentation_data)
+                    # Perform dental analysis (pass actual image width for segmentation-side checks)
+                    try:
+                        img_width = int(results[0].orig_shape[1])
+                    except Exception:
+                        img_width = 1000
+                    analysis_results = self.perform_dental_analysis(keypoints_dict, segmentation_data, side=side, img_width=img_width)
 
                     # Add confidence and coverage information to analysis results
                     analysis_results["confidence"] = {
@@ -459,64 +463,69 @@ class KeypointDetectionService:
                 "end": {"x": m2["x"], "y": m2["y"]}
             }
 
-           # 2. Calculate sector lines
-            # Sector 2
-            sector2_start = self._midpoint(
+            # 2. สร้างเส้นแบ่ง sector ตามสเปค (ต้องมี 4 เส้น: L1-L4)
+            # L1: midpoint(r11,r12) -> midpoint(c11,c12)
+            L1_start = self._midpoint(
                 keypoints_dict[central_incisor_root]["x"], keypoints_dict[central_incisor_root]["y"],
                 keypoints_dict[lateral_incisor_root]["x"], keypoints_dict[lateral_incisor_root]["y"]
             )
-            sector2_end = self._midpoint(
+            L1_end = self._midpoint(
                 keypoints_dict[central_incisor_crown]["x"], keypoints_dict[central_incisor_crown]["y"],
                 keypoints_dict[lateral_incisor_crown]["x"], keypoints_dict[lateral_incisor_crown]["y"]
             )
 
-            # Sector 3
-            sector3_start = self._midpoint(
+            # L2: midpoint(r12,r13) -> midpoint(c12,c13)
+            L2_start = self._midpoint(
                 keypoints_dict[lateral_incisor_root]["x"], keypoints_dict[lateral_incisor_root]["y"],
                 keypoints_dict[canine_root]["x"], keypoints_dict[canine_root]["y"]
             )
-            sector3_end = self._midpoint(
+            L2_end = self._midpoint(
                 keypoints_dict[lateral_incisor_crown]["x"], keypoints_dict[lateral_incisor_crown]["y"],
                 keypoints_dict[canine_crown]["x"], keypoints_dict[canine_crown]["y"]
             )
 
-            # Sector 4
-            sector4_start = self._midpoint(
+            # L3: midpoint(r13,r14) -> midpoint(c13,c14)
+            L3_start = self._midpoint(
                 keypoints_dict[canine_root]["x"], keypoints_dict[canine_root]["y"],
                 keypoints_dict[first_premolar_root]["x"], keypoints_dict[first_premolar_root]["y"]
             )
-            sector4_end = self._midpoint(
+            L3_end = self._midpoint(
                 keypoints_dict[canine_crown]["x"], keypoints_dict[canine_crown]["y"],
                 keypoints_dict[first_premolar_crown]["x"], keypoints_dict[first_premolar_crown]["y"]
             )
 
-            # Save sector lines for visualization
-            analysis_results["sector_lines"] = {
-                "sector2": {
-                    "start": {"x": sector2_start[0], "y": sector2_start[1]},
-                    "end": {"x": sector2_end[0], "y": sector2_end[1]}
-                },
-                "sector3": {
-                    "start": {"x": sector3_start[0], "y": sector3_start[1]},
-                    "end": {"x": sector3_end[0], "y": sector3_end[1]}
-                },
-                "sector4": {
-                    "start": {"x": sector4_start[0], "y": sector4_start[1]},
-                    "end": {"x": sector4_end[0], "y": sector4_end[1]}
-                }
-            }
+            # L4: midpoint(r14,r15) -> midpoint(c14,c15) (สำรองถ้ามีจุด r15,c15) ไม่ใช้งานใน sector boundary ถ้าไม่มีข้อมูล
+            L4_start = None
+            L4_end = None
+            if second_premolar_root in keypoints_dict and second_premolar_crown in keypoints_dict:
+                L4_start = self._midpoint(
+                    keypoints_dict[first_premolar_root]["x"], keypoints_dict[first_premolar_root]["y"],
+                    keypoints_dict[second_premolar_root]["x"], keypoints_dict[second_premolar_root]["y"]
+                )
+                L4_end = self._midpoint(
+                    keypoints_dict[first_premolar_crown]["x"], keypoints_dict[first_premolar_crown]["y"],
+                    keypoints_dict[second_premolar_crown]["x"], keypoints_dict[second_premolar_crown]["y"]
+                )
 
-            # Check which sector the canine root falls into
+            # บันทึกข้อมูลเส้นทั้งหมดเพื่อ visualization
+            sector_lines_payload = {
+                "L1": {"start": {"x": L1_start[0], "y": L1_start[1]}, "end": {"x": L1_end[0], "y": L1_end[1]}},
+                "L2": {"start": {"x": L2_start[0], "y": L2_start[1]}, "end": {"x": L2_end[0], "y": L2_end[1]}},
+                "L3": {"start": {"x": L3_start[0], "y": L3_start[1]}, "end": {"x": L3_end[0], "y": L3_end[1]}}
+            }
+            if L4_start and L4_end:
+                sector_lines_payload["L4"] = {"start": {"x": L4_start[0], "y": L4_start[1]}, "end": {"x": L4_end[0], "y": L4_end[1]}}
+            analysis_results["sector_lines"] = sector_lines_payload
+
             canine_root_point = (keypoints_dict[canine_root]["x"], keypoints_dict[canine_root]["y"])
 
-            sector = self._determine_sector(
-                canine_root_point,
-                [sector2_start, sector2_end],
-                [sector3_start, sector3_end],
-                [sector4_start, sector4_end]
-            )
+            # คำนวณ sector โดยใช้ interval ของค่า x (เฉลี่ยของแต่ละเส้น) ตามสเปค: sector2 = ระหว่าง L1-L2, sector3 = L2-L3, sector4 = L3-L4
+            interval_lines = [(L1_start, L1_end), (L2_start, L2_end), (L3_start, L3_end)]
+            if L4_start and L4_end:
+                interval_lines.append((L4_start, L4_end))
 
-            # Determine impaction type based on sector
+            sector = self._determine_sector_by_intervals(canine_root_point, interval_lines)
+
             impaction_type = "unknown"
             if sector == 2:
                 impaction_type = "Buccally impact"
@@ -525,10 +534,7 @@ class KeypointDetectionService:
             elif sector == 4:
                 impaction_type = "Palatally impact"
 
-            analysis_results["sector_analysis"] = {
-                "sector": sector,
-                "impaction_type": impaction_type
-            }
+            analysis_results["sector_analysis"] = {"sector": sector, "impaction_type": impaction_type}
 
             # Canine Assessment - using segmentation data if available
             canine_assessment = {
@@ -537,6 +543,10 @@ class KeypointDetectionService:
                 "root_position": "unknown",
                 "eruption_difficulty": "unknown"
             }
+
+            # We'll compute flags and set eruption_difficulty once at the end to avoid cascading flips
+            overlap_flag = False
+            vertical_flag = False
 
             # Check for overlap using segmentation data
             # 4.1 Check for overlap using segmentation data
@@ -570,10 +580,7 @@ class KeypointDetectionService:
 
                     overlap = self._check_bbox_overlap(canine_bbox, lateral_bbox)
                     canine_assessment["overlap"] = "Yes" if overlap > 0 else "No"
-                    if overlap > 0:
-                        canine_assessment["eruption_difficulty"] = "Unfavorable"
-                    else:
-                        canine_assessment["eruption_difficulty"] = "Favorable"
+                    overlap_flag = overlap > 0
 
             # 4.2 Vertical height assessment
             canine_crown_y = keypoints_dict[canine_crown]["y"]
@@ -585,25 +592,29 @@ class KeypointDetectionService:
 
             if canine_crown_y < lateral_midpoint_y:
                 canine_assessment["vertical_height"] = "Beyond half of root"
-                if canine_assessment["eruption_difficulty"] != "Unfavorable":
-                    canine_assessment["eruption_difficulty"] = "Unfavorable"
+                vertical_flag = True
             else:
                 canine_assessment["vertical_height"] = "Within half of root"
-                if canine_assessment["eruption_difficulty"] != "Unfavorable":
-                    canine_assessment["eruption_difficulty"] = "Favorable"
+                vertical_flag = False
 
-            # 4.3 Root position assessment
+            # 4.3 Root position assessment (horizontal alignment of root tip vs crown tip)
             canine_root_x = keypoints_dict[canine_root]["x"]
             canine_crown_x = keypoints_dict[canine_crown]["x"]
 
-            if abs(canine_root_x - canine_crown_x) < 10:  # Threshold for "above" (in pixels)
+            # Consider "Above canine position" if root is roughly vertically aligned with crown (small horizontal offset)
+            root_flag = False
+            if abs(canine_root_x - canine_crown_x) < 10:  # within ~10px horizontally
                 canine_assessment["root_position"] = "Above canine position"
-                if canine_assessment["eruption_difficulty"] != "Unfavorable":
-                    canine_assessment["eruption_difficulty"] = "Favorable"
+                root_flag = False
             else:
                 canine_assessment["root_position"] = "Other position"
-                if canine_assessment["eruption_difficulty"] != "Unfavorable":
-                    canine_assessment["eruption_difficulty"] = "Unfavorable"
+                root_flag = True
+
+            # Now set eruption_difficulty from the 3 factors (overlap, vertical, root position)
+            if overlap_flag or vertical_flag or root_flag:
+                canine_assessment["eruption_difficulty"] = "Unfavorable"
+            else:
+                canine_assessment["eruption_difficulty"] = "Favorable"
 
             analysis_results["canine_assessment"] = canine_assessment
 
@@ -689,31 +700,31 @@ class KeypointDetectionService:
             analysis_results["angle_measurements"] = angle_measurements
 
             # 6. Final determination of impaction
-            # Count difficult factors
+            # ปรับ logic: นับปัจจัยที่เป็น Unfavorable และให้น้ำหนัก sector4 > sector3 > sector2
             difficult_factors = 0
 
-            # Sector analysis (Palatally impact is most difficult)
             if impaction_type == "Palatally impact":
                 difficult_factors += 2
-            elif impaction_type == "Mid-alveolar":
+            # Note: do not add score for Mid-alveolar alone to avoid false positives
+            # Buccally (sector2) ไม่เพิ่มคะแนนโดยตรงตามสเปค (อาจถือว่าใกล้เคียงปกติที่สุดใน impaction)
+
+            # Canine assessment: add 1 for each unfavorable factor among overlap, vertical depth, and root position
+            if overlap_flag:
+                difficult_factors += 1
+            if vertical_flag:
+                difficult_factors += 1
+            if root_flag:
                 difficult_factors += 1
 
-            # Canine assessment
-            if canine_assessment["eruption_difficulty"] == "Difficult":
-                difficult_factors += 1
+            # Angle measurements: ใช้ label Unfavorable
+            for ang_key in ["angle_with_midline", "angle_with_lateral", "angle_with_occlusal"]:
+                if ang_key in angle_measurements and angle_measurements[ang_key].get("difficulty") == "Unfavorable":
+                    difficult_factors += 1
 
-            # Angle measurements
-            if "angle_with_midline" in angle_measurements and angle_measurements["angle_with_midline"]["difficulty"] == "Difficult":
-                difficult_factors += 1
-            if "angle_with_lateral" in angle_measurements and angle_measurements["angle_with_lateral"]["difficulty"] == "Difficult":
-                difficult_factors += 1
-            if "angle_with_occlusal" in angle_measurements and angle_measurements["angle_with_occlusal"]["difficulty"] == "Difficult":
-                difficult_factors += 1
-
-            # Determine overall prediction
-            if difficult_factors >= 3:
+            # Threshold สำหรับสรุปผล
+            if difficult_factors >= 4:
                 prediction = "severely impacted"
-            elif difficult_factors >= 1:
+            elif difficult_factors >= 2:
                 prediction = "impacted"
             else:
                 prediction = "normal"
@@ -760,6 +771,54 @@ class KeypointDetectionService:
             return 4  # Sector 4
         else:
             return 1  # Sector 1 (outside the defined sectors)
+
+    def _determine_sector_by_intervals(self, point, lines):
+        """
+        Determine sector using ordered vertical/oblique divider lines (L1, L2, L3, L4 (optional)).
+        lines: list of tuples [(p_start, p_end), ...] in anatomical order from mesial (incisor) to distal (premolar).
+        Sector definition (ตามสเปคผู้ใช้):
+            Sector 2: between L1 and L2
+            Sector 3: between L2 and L3
+            Sector 4: between L3 and L4 (ถ้ามี L4; ถ้าไม่มีและอยู่ distal กว่า L3 ให้จัดเป็น 4 เฉพาะเมื่อเกิน L3)
+        We project canine root point onto x by using average x of line endpoints (assumes panoramic image roughly left-right).
+        """
+        if len(lines) < 3:
+            return 1  # ไม่พอสำหรับนิยาม sector 2-4
+
+        # คำนวณตำแหน่งค่า x ของแต่ละเส้น (ใช่ค่าเฉลี่ย x ของปลายทั้งสอง)
+        line_x = []
+        for (p1, p2) in lines:
+            line_x.append((p1[0] + p2[0]) / 2.0)
+
+        # จัดเรียงตามค่า x (จาก mesial -> distal) เผื่อ keypoint สลับลำดับ
+        sorted_pairs = sorted(zip(line_x, lines), key=lambda t: t[0])
+        line_x = [p[0] for p in sorted_pairs]
+
+        px = point[0]
+
+        # ถ้า point อยู่ก่อน L1 หรือระหว่างก่อน mis-order ถือว่า sector 1
+        if px < line_x[0]:
+            return 1
+
+        # Sector 2: L1 <= x < L2
+        if line_x[0] <= px < line_x[1]:
+            return 2
+        # Sector 3: L2 <= x < L3
+        if line_x[1] <= px < line_x[2]:
+            return 3
+
+        # Sector 4 needs L4 ถ้ามี
+        if len(line_x) >= 4:
+            if line_x[2] <= px < line_x[3]:
+                return 4
+            if px >= line_x[3]:
+                return 4  # distal กว่า L4 จัดเป็น 4
+        else:
+            # ไม่มี L4: ถ้าเกิน L3 ให้ถือเป็น sector 4 ตามสเปค simplified
+            if px >= line_x[2]:
+                return 4
+
+        return 1
 
     def _line_from_points(self, p1, p2):
         """Convert two points to a line in standard form (Ax + By + C = 0)"""

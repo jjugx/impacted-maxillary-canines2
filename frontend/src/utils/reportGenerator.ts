@@ -2,7 +2,84 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import autoTable from 'jspdf-autotable';
 
-export const generatePDF = (result: any) => {
+// Helper: load an image URL as a Data URL for embedding into PDF
+const loadImageAsDataURL = async (url?: string): Promise<string | undefined> => {
+  try {
+    if (!url) return undefined;
+    const res = await fetch(url, { mode: 'cors' });
+    if (!res.ok) return undefined;
+    const blob = await res.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (_) {
+    return undefined;
+  }
+};
+
+// Helper: draw an image with aspect ratio inside a max box and add a caption
+const drawImageWithCaption = (
+  doc: jsPDF,
+  dataUrl: string,
+  caption: string,
+  x: number,
+  y: number,
+  maxW: number,
+  maxH: number,
+) => {
+  // Try to infer image ratio by creating temporary Image in browser context
+  // Fallback: assume panoramic ratio ~2.0
+  let drawW = maxW;
+  let drawH = maxH;
+  try {
+    // jsPDF doesn't give us native image size; estimate by ratio from data URL if possible
+    // We safely create a temporary Image only when running in browser
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    const img = new Image();
+    img.src = dataUrl;
+    const w = (img as HTMLImageElement).naturalWidth || (img as HTMLImageElement).width;
+    const h = (img as HTMLImageElement).naturalHeight || (img as HTMLImageElement).height;
+    if (w && h) {
+      const ratio = w / h;
+      drawW = maxW;
+      drawH = drawW / ratio;
+      if (drawH > maxH) {
+        drawH = maxH;
+        drawW = drawH * ratio;
+      }
+    } else {
+      // fallback keep within bounds with assumed ratio
+      const ratio = 2.0;
+      drawW = maxW;
+      drawH = Math.min(maxH, drawW / ratio);
+    }
+  } catch {
+    const ratio = 2.0;
+    drawW = maxW;
+    drawH = Math.min(maxH, drawW / ratio);
+  }
+
+  doc.addImage(dataUrl, 'JPEG', x, y, drawW, drawH, undefined, 'FAST');
+  // Caption under the image
+  doc.setFontSize(10);
+  doc.setTextColor(0, 0, 0);
+  doc.text(caption, x, y + drawH + 5);
+  return y + drawH + 12; // return next Y position
+};
+
+export const generatePDF = async (
+  result: any,
+  images?: {
+    originalImage?: string;
+    resultImage?: string;
+    segmentationImage?: string;
+    dentalOverlayImage?: string;
+  }
+) => {
   // Create a new PDF document
   const doc = new jsPDF();
 
@@ -129,6 +206,66 @@ export const generatePDF = (result: any) => {
       });
     }
 
+    // ROI Classification
+    if (result.analysis.roi) {
+      const lastTableEnd = (doc as any).lastAutoTable?.finalY || 95;
+
+      doc.setFontSize(14);
+      doc.text('ROI Classification', 20, lastTableEnd + 15);
+
+      const roi = result.analysis.roi;
+      const impactedSidesText = Array.isArray(roi.impacted_sides) && roi.impacted_sides.length > 0
+        ? roi.impacted_sides.join(', ')
+        : 'None';
+      const overallRoiText = roi.prediction_result
+        ? roi.prediction_result.split(' ').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+        : (roi.overall_impacted === true
+            ? 'Impacted'
+            : (roi.overall_impacted === false ? 'Normal' : 'Unknown'));
+
+      autoTable(doc, {
+        startY: lastTableEnd + 20,
+        head: [['Parameter', 'Value']],
+        body: [
+          ['ROI Source', roi.used_source || '—'],
+          ['Threshold', (typeof roi.threshold === 'number') ? roi.threshold.toFixed(2) : '—'],
+          ['Impacted Sides', impactedSidesText],
+          ['Overall (ROI)', overallRoiText]
+        ],
+        theme: 'grid',
+        headStyles: { fillColor: [66, 139, 202] }
+      });
+
+      // Per-side details
+      const lastTableEndRoi = (doc as any).lastAutoTable?.finalY || (lastTableEnd + 20);
+      const sides = roi.sides || {};
+      const sideRows: any[] = [];
+      const left = sides.left;
+      const right = sides.right;
+
+      if (left) {
+        const prob = (typeof left.prob === 'number') ? `${(left.prob * 100).toFixed(1)}%` : '—';
+        const outcome = (left.impacted === true) ? 'Impacted' : (left.impacted === false ? 'Normal' : 'Unknown');
+        sideRows.push(['Left', prob, outcome]);
+      }
+
+      if (right) {
+        const prob = (typeof right.prob === 'number') ? `${(right.prob * 100).toFixed(1)}%` : '—';
+        const outcome = (right.impacted === true) ? 'Impacted' : (right.impacted === false ? 'Normal' : 'Unknown');
+        sideRows.push(['Right', prob, outcome]);
+      }
+
+      if (sideRows.length > 0) {
+        autoTable(doc, {
+          startY: lastTableEndRoi + 10,
+          head: [['Side', 'Probability', 'Outcome']],
+          body: sideRows,
+          theme: 'grid',
+          headStyles: { fillColor: [66, 139, 202] }
+        });
+      }
+    }
+
     // Final Assessment
     const lastTableEnd = (doc as any).lastAutoTable?.finalY || 95;
 
@@ -187,12 +324,52 @@ export const generatePDF = (result: any) => {
   }
 
   // Add page numbers
-  const totalPages = doc.internal.getNumberOfPages();
+  const totalPages = (doc as any).getNumberOfPages ? (doc as any).getNumberOfPages() : 1;
   for (let i = 1; i <= totalPages; i++) {
     doc.setPage(i);
     doc.setFontSize(8);
     doc.setTextColor(100, 100, 100);
     doc.text(`Page ${i} of ${totalPages}`, doc.internal.pageSize.getWidth() - 20, doc.internal.pageSize.getHeight() - 10);
+  }
+
+  // Add images section (new page)
+  try {
+    const pageMargin = 20;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const maxW = pageWidth - pageMargin * 2; // full width minus margins
+    const maxH = 60; // per image box height
+
+    const originalData = await loadImageAsDataURL(images?.originalImage);
+    const kpData = await loadImageAsDataURL(images?.resultImage);
+    const segData = await loadImageAsDataURL(images?.segmentationImage);
+    const overlayData = await loadImageAsDataURL(images?.dentalOverlayImage);
+
+    if (originalData || kpData || segData || overlayData) {
+      doc.addPage();
+      doc.setFontSize(16);
+      doc.setTextColor(0, 0, 0);
+      doc.text('Images', pageWidth / 2, 20, { align: 'center' });
+
+      let y = 28;
+      if (originalData) {
+        y = drawImageWithCaption(doc, originalData, 'Original X-ray', pageMargin, y, maxW, maxH);
+      }
+      if (kpData) {
+        if (y + maxH + 20 > pageHeight) { doc.addPage(); y = 20; }
+        y = drawImageWithCaption(doc, kpData, 'Keypoint Detection Overlay', pageMargin, y, maxW, maxH);
+      }
+      if (segData) {
+        if (y + maxH + 20 > pageHeight) { doc.addPage(); y = 20; }
+        y = drawImageWithCaption(doc, segData, 'Tooth Segmentation Overlay', pageMargin, y, maxW, maxH);
+      }
+      if (overlayData) {
+        if (y + maxH + 20 > pageHeight) { doc.addPage(); y = 20; }
+        y = drawImageWithCaption(doc, overlayData, 'ROI-guided Dental Overlay', pageMargin, y, maxW, maxH);
+      }
+    }
+  } catch (_) {
+    // If image loading fails, skip images section silently
   }
 
   // Save the PDF with a filename including the case ID and date

@@ -14,512 +14,21 @@ interface MeasurementCanvasProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   result: any;
   originalImage: string;
-  fullSize?: boolean; // Optional prop to indicate if the canvas should be displayed in full size
-  activeSide?: string; // Active side to display (left or right)
+  fullSize?: boolean;
+  activeSide?: string; // kept for compatibility (used in ROI label thickness only)
 }
 
 const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
   result,
   originalImage,
-  fullSize = false, // Default is false (not full size)
-  activeSide = "right", // Default side is right
+  fullSize = false,
+  activeSide = "right",
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    // Don't do anything if required props are missing or canvas not available
-    if (!result || !originalImage || !canvasRef.current) return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    // Create an image object to load the original X-ray
-    const img = new Image();
-    img.crossOrigin = "Anonymous"; // Handle CORS if needed
-
-    // Function to handle image load event
-    img.onload = () => {
-      setIsLoading(false);
-
-      // Set canvas dimensions based on fullSize mode
-      if (fullSize) {
-        // For fullscreen mode, maintain aspect ratio but make it larger
-        const maxWidth = window.innerWidth * 0.85;
-        const maxHeight = window.innerHeight * 0.75;
-
-        const imgRatio = img.width / img.height;
-        let canvasWidth, canvasHeight;
-
-        if (img.width / maxWidth > img.height / maxHeight) {
-          // Width is the limiting dimension
-          canvasWidth = maxWidth;
-          canvasHeight = canvasWidth / imgRatio;
-        } else {
-          // Height is the limiting dimension
-          canvasHeight = maxHeight;
-          canvasWidth = canvasHeight * imgRatio;
-        }
-
-        canvas.width = canvasWidth;
-        canvas.height = canvasHeight;
-
-        // Scale factors for drawing
-        const scaleX = canvasWidth / img.width;
-        const scaleY = canvasHeight / img.height;
-
-        // Draw the scaled image
-        ctx.drawImage(img, 0, 0, canvasWidth, canvasHeight);
-
-        // Draw all measurements with scaled coordinates
-        drawAllMeasurements(ctx, result.analysis, canvasWidth, canvasHeight, scaleX, scaleY);
-      } else {
-        // Regular non-fullscreen mode - use original image dimensions
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
-
-        // Draw all measurements with original coordinates
-        drawAllMeasurements(ctx, result.analysis, img.width, img.height, 1, 1);
-      }
-    };
-
-    // Set the image source to trigger loading
-    img.src = originalImage;
-
-    // Function to draw all measurements and analysis lines
-    const drawAllMeasurements = (
-      ctx: CanvasRenderingContext2D,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      analysis: any,
-      width: number,
-      height: number,
-      scaleX: number,
-      scaleY: number
-    ) => {
-      if (!analysis) return;
-
-      // Determine which analysis to use
-      let drawAnalysis = analysis;
-
-      // If we have side-specific analyses
-      if (analysis.side_analyses && Object.keys(analysis.side_analyses).length > 0) {
-        // If the active side exists
-        if (analysis.side_analyses[activeSide]) {
-          drawAnalysis = analysis.side_analyses[activeSide];
-        }
-        // Otherwise use the first available side
-        else {
-          const firstSide = Object.keys(analysis.side_analyses)[0];
-          drawAnalysis = analysis.side_analyses[firstSide];
-        }
-      }
-
-      // Helper function to scale X coordinate
-      const sx = (x: number) => x * scaleX;
-      // Helper function to scale Y coordinate
-      const sy = (y: number) => y * scaleY;
-
-      // Draw midline - Blue
-      if (drawAnalysis.midline) {
-        drawLine(
-          ctx,
-          {
-            start: {
-              x: sx(drawAnalysis.midline.start.x),
-              y: sy(drawAnalysis.midline.start.y)
-            },
-            end: {
-              x: sx(drawAnalysis.midline.end.x),
-              y: sy(drawAnalysis.midline.end.y)
-            }
-          },
-          "rgba(0, 0, 255, 0.8)",
-          fullSize ? 3 : 2
-        );
-        drawLabel(
-          ctx,
-          {
-            start: {
-              x: sx(drawAnalysis.midline.start.x),
-              y: sy(drawAnalysis.midline.start.y)
-            },
-            end: {
-              x: sx(drawAnalysis.midline.end.x),
-              y: sy(drawAnalysis.midline.end.y)
-            }
-          },
-          "Midline",
-          "rgba(0, 0, 255, 0.8)",
-          fullSize
-        );
-      }
-
-      // Draw sector lines - Different shades of green
-      if (drawAnalysis.sector_lines) {
-        // Sector 2
-        if (drawAnalysis.sector_lines.sector2) {
-          drawLine(
-            ctx,
-            {
-              start: {
-                x: sx(drawAnalysis.sector_lines.sector2.start.x),
-                y: sy(drawAnalysis.sector_lines.sector2.start.y)
-              },
-              end: {
-                x: sx(drawAnalysis.sector_lines.sector2.end.x),
-                y: sy(drawAnalysis.sector_lines.sector2.end.y)
-              }
-            },
-            "rgba(255, 0, 0, 0.7)",
-            fullSize ? 2 : 1
-          );
-          drawLabel(
-            ctx,
-            {
-              start: {
-                x: sx(drawAnalysis.sector_lines.sector2.start.x),
-                y: sy(drawAnalysis.sector_lines.sector2.start.y)
-              },
-              end: {
-                x: sx(drawAnalysis.sector_lines.sector2.end.x),
-                y: sy(drawAnalysis.sector_lines.sector2.end.y)
-              }
-            },
-            "Sector 2",
-            "rgba(255, 0, 0, 0.8)",
-            fullSize
-          );
-        }
-
-        // Sector 3
-        if (drawAnalysis.sector_lines.sector3) {
-          drawLine(
-            ctx,
-            {
-              start: {
-                x: sx(drawAnalysis.sector_lines.sector3.start.x),
-                y: sy(drawAnalysis.sector_lines.sector3.start.y)
-              },
-              end: {
-                x: sx(drawAnalysis.sector_lines.sector3.end.x),
-                y: sy(drawAnalysis.sector_lines.sector3.end.y)
-              }
-            },
-            "rgba(0, 176, 80, 0.7)",
-            fullSize ? 2 : 1
-          );
-          drawLabel(
-            ctx,
-            {
-              start: {
-                x: sx(drawAnalysis.sector_lines.sector3.start.x),
-                y: sy(drawAnalysis.sector_lines.sector3.start.y)
-              },
-              end: {
-                x: sx(drawAnalysis.sector_lines.sector3.end.x),
-                y: sy(drawAnalysis.sector_lines.sector3.end.y)
-              }
-            },
-            "Sector 3",
-            "rgba(0, 176, 80, 0.8)",
-            fullSize
-          );
-        }
-
-        // Sector 4
-        if (drawAnalysis.sector_lines.sector4) {
-          drawLine(
-            ctx,
-            {
-              start: {
-                x: sx(drawAnalysis.sector_lines.sector4.start.x),
-                y: sy(drawAnalysis.sector_lines.sector4.start.y)
-              },
-              end: {
-                x: sx(drawAnalysis.sector_lines.sector4.end.x),
-                y: sy(drawAnalysis.sector_lines.sector4.end.y)
-              }
-            },
-            "rgba(255, 153, 0, 0.7)",
-            fullSize ? 2 : 1
-          );
-          drawLabel(
-            ctx,
-            {
-              start: {
-                x: sx(drawAnalysis.sector_lines.sector4.start.x),
-                y: sy(drawAnalysis.sector_lines.sector4.start.y)
-              },
-              end: {
-                x: sx(drawAnalysis.sector_lines.sector4.end.x),
-                y: sy(drawAnalysis.sector_lines.sector4.end.y)
-              }
-            },
-            "Sector 4",
-            "rgba(255, 153, 0, 0.8)",
-            fullSize
-          );
-        }
-      }
-
-      // Occlusal plane - Purple
-      if (drawAnalysis.occlusal_plane) {
-        drawLine(
-          ctx,
-          {
-            start: {
-              x: sx(drawAnalysis.occlusal_plane.start.x),
-              y: sy(drawAnalysis.occlusal_plane.start.y)
-            },
-            end: {
-              x: sx(drawAnalysis.occlusal_plane.end.x),
-              y: sy(drawAnalysis.occlusal_plane.end.y)
-            }
-          },
-          "rgba(153, 51, 255, 0.8)",
-          fullSize ? 3 : 2
-        );
-        drawLabel(
-          ctx,
-          {
-            start: {
-              x: sx(drawAnalysis.occlusal_plane.start.x),
-              y: sy(drawAnalysis.occlusal_plane.start.y)
-            },
-            end: {
-              x: sx(drawAnalysis.occlusal_plane.end.x),
-              y: sy(drawAnalysis.occlusal_plane.end.y)
-            }
-          },
-          "Occlusal Plane",
-          "rgba(153, 51, 255, 0.8)",
-          fullSize
-        );
-      }
-
-      // Canine axis - Yellow-gold
-      if (drawAnalysis.canine_axis) {
-        drawLine(
-          ctx,
-          {
-            start: {
-              x: sx(drawAnalysis.canine_axis.start.x),
-              y: sy(drawAnalysis.canine_axis.start.y)
-            },
-            end: {
-              x: sx(drawAnalysis.canine_axis.end.x),
-              y: sy(drawAnalysis.canine_axis.end.y)
-            }
-          },
-          "rgba(255, 204, 0, 0.8)",
-          fullSize ? 4 : 3 // Make canine axis thicker to stand out
-        );
-        drawLabel(
-          ctx,
-          {
-            start: {
-              x: sx(drawAnalysis.canine_axis.start.x),
-              y: sy(drawAnalysis.canine_axis.start.y)
-            },
-            end: {
-              x: sx(drawAnalysis.canine_axis.end.x),
-              y: sy(drawAnalysis.canine_axis.end.y)
-            }
-          },
-          "Canine Axis",
-          "rgba(255, 204, 0, 0.9)",
-          fullSize
-        );
-      }
-
-      // Lateral incisor axis - Cyan
-      if (drawAnalysis.lateral_axis) {
-        drawLine(
-          ctx,
-          {
-            start: {
-              x: sx(drawAnalysis.lateral_axis.start.x),
-              y: sy(drawAnalysis.lateral_axis.start.y)
-            },
-            end: {
-              x: sx(drawAnalysis.lateral_axis.end.x),
-              y: sy(drawAnalysis.lateral_axis.end.y)
-            }
-          },
-          "rgba(0, 204, 255, 0.8)",
-          fullSize ? 3 : 2
-        );
-        drawLabel(
-          ctx,
-          {
-            start: {
-              x: sx(drawAnalysis.lateral_axis.start.x),
-              y: sy(drawAnalysis.lateral_axis.start.y)
-            },
-            end: {
-              x: sx(drawAnalysis.lateral_axis.end.x),
-              y: sy(drawAnalysis.lateral_axis.end.y)
-            }
-          },
-          "Lateral Incisor",
-          "rgba(0, 204, 255, 0.9)",
-          fullSize
-        );
-      }
-
-      // Draw keypoints if available
-      if (result.keypoints && result.keypoints.length > 0) {
-        // Filter keypoints based on side if needed
-        let filteredKeypoints = result.keypoints;
-
-        // If we have side-specific analyses, filter keypoints
-        if (analysis.side_analyses) {
-          // For right side, include points starting with "c1", "r1", "m", "mb16"
-          // For left side, include points starting with "c2", "r2", "m", "mb26"
-          filteredKeypoints = result.keypoints.filter((kp: any) => {
-            if (activeSide === "right") {
-              return kp.label.startsWith("c1") ||
-                     kp.label.startsWith("r1") ||
-                     kp.label.startsWith("m") ||
-                     kp.label === "mb16";
-            } else {
-              return kp.label.startsWith("c2") ||
-                     kp.label.startsWith("r2") ||
-                     kp.label.startsWith("m") ||
-                     kp.label === "mb26";
-            }
-          });
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        filteredKeypoints.forEach((kp: any) => {
-          drawKeypoint(
-            ctx,
-            sx(kp.x),
-            sy(kp.y),
-            kp.label,
-            kp.confidence,
-            fullSize
-          );
-        });
-      }
-
-      // Draw angles if available
-      if (drawAnalysis.angle_measurements) {
-        const angles = drawAnalysis.angle_measurements;
-
-        // Draw angle with midline
-        if (
-          angles.angle_with_midline &&
-          drawAnalysis.canine_axis &&
-          drawAnalysis.midline
-        ) {
-          drawAngle(
-            ctx,
-            {
-              x: sx(drawAnalysis.canine_axis.end.x),
-              y: sy(drawAnalysis.canine_axis.end.y)
-            },
-            {
-              x: sx(drawAnalysis.canine_axis.start.x),
-              y: sy(drawAnalysis.canine_axis.start.y)
-            },
-            {
-              x: sx(drawAnalysis.midline.end.x),
-              y: sy(drawAnalysis.midline.end.y)
-            },
-            angles.angle_with_midline.value.toFixed(1) + "°",
-            "rgba(0, 0, 255, 0.7)",
-            fullSize
-          );
-        }
-
-        // Draw angle with lateral
-        if (
-          angles.angle_with_lateral &&
-          drawAnalysis.canine_axis &&
-          drawAnalysis.lateral_axis
-        ) {
-          drawAngle(
-            ctx,
-            {
-              x: sx(drawAnalysis.canine_axis.end.x),
-              y: sy(drawAnalysis.canine_axis.end.y)
-            },
-            {
-              x: sx(drawAnalysis.canine_axis.start.x),
-              y: sy(drawAnalysis.canine_axis.start.y)
-            },
-            {
-              x: sx(drawAnalysis.lateral_axis.end.x),
-              y: sy(drawAnalysis.lateral_axis.end.y)
-            },
-            angles.angle_with_lateral.value.toFixed(1) + "°",
-            "rgba(255, 165, 0, 0.7)",
-            fullSize
-          );
-        }
-
-        // Draw angle with occlusal
-        if (
-          angles.angle_with_occlusal &&
-          drawAnalysis.canine_axis &&
-          drawAnalysis.occlusal_plane
-        ) {
-          drawAngle(
-            ctx,
-            {
-              x: sx(drawAnalysis.canine_axis.end.x),
-              y: sy(drawAnalysis.canine_axis.end.y)
-            },
-            {
-              x: sx(drawAnalysis.canine_axis.start.x),
-              y: sy(drawAnalysis.canine_axis.start.y)
-            },
-            {
-              x: sx(drawAnalysis.occlusal_plane.end.x),
-              y: sy(drawAnalysis.occlusal_plane.end.y)
-            },
-            angles.angle_with_occlusal.value.toFixed(1) + "°",
-            "rgba(128, 0, 128, 0.7)",
-            fullSize
-          );
-        }
-      }
-
-      // Draw a legend if in fullSize mode
-      if (fullSize) {
-        drawLegend(ctx, width, height);
-      }
-
-      // Draw side indicator
-      if (fullSize && analysis.side_analyses) {
-        // Display which side we're viewing
-        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-        ctx.fillRect(20, 20, 120, 36);
-
-        ctx.font = "bold 18px Arial";
-        ctx.fillStyle = "#fff";
-        ctx.textAlign = "left";
-        ctx.fillText(`${activeSide.toUpperCase()} SIDE`, 30, 44);
-      }
-    };
-
-    // Clean up function
-    return () => {
-      img.onload = null;
-    };
-  }, [result, originalImage, fullSize, activeSide]);
-
-  // Function to draw a line
-  const drawLine = (
-    ctx: CanvasRenderingContext2D,
-    line: Line,
-    color: string,
-    width: number,
-  ) => {
+  // Helper: draw a line
+  const drawLine = (ctx: CanvasRenderingContext2D, line: Line, color: string, width: number) => {
     ctx.beginPath();
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
@@ -528,215 +37,459 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
     ctx.stroke();
   };
 
-  // Function to draw a label
+  const drawRectWithLabel = (
+    ctx: CanvasRenderingContext2D,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    color: string,
+    label: string,
+    isFullSize = false,
+    lineWidth = 2,
+  ) => {
+    const w = Math.max(1, x2 - x1);
+    const h = Math.max(1, y2 - y1);
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = color;
+    ctx.fillRect(x1, y1, w, h);
+    ctx.globalAlpha = 1.0;
+    ctx.lineWidth = lineWidth;
+    ctx.strokeStyle = color;
+    ctx.strokeRect(x1, y1, w, h);
+    ctx.font = isFullSize ? "bold 13px Arial" : "bold 11px Arial";
+    const tm = ctx.measureText(label);
+    const padX = 6;
+    const boxH = isFullSize ? 20 : 16;
+    let lx = x1;
+    let ly = Math.max(0, y1 - (boxH + 2));
+    if (lx + tm.width + padX * 2 > ctx.canvas.width) {
+      lx = Math.max(0, ctx.canvas.width - (tm.width + padX * 2) - 4);
+    }
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.fillRect(lx, ly, tm.width + padX * 2, boxH);
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "left";
+    ctx.fillText(label, lx + padX, ly + (isFullSize ? 14 : 12));
+    ctx.restore();
+  };
+
+  const drawRoiInfoBadge = (ctx: CanvasRenderingContext2D, text: string) => {
+    const x = 20;
+    const y = 64;
+    ctx.save();
+    ctx.font = "12px Arial";
+    const tm = ctx.measureText(text);
+    const padX = 8;
+    const w = tm.width + padX * 2;
+    const h = 22;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.25)";
+    ctx.lineWidth = 1;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = "#111827";
+    ctx.textAlign = "left";
+    ctx.fillText(text, x + padX, y + h - 7);
+    ctx.restore();
+  };
+
   const drawLabel = (
     ctx: CanvasRenderingContext2D,
     line: Line,
     text: string,
     color: string,
-    isFullSize: boolean = false,
+    isFullSize = false,
   ) => {
     const midX = (line.start.x + line.end.x) / 2;
     const midY = (line.start.y + line.end.y) / 2;
-
-    // Set font size based on display mode
     ctx.font = isFullSize ? "14px Arial" : "12px Arial";
-
-    // Add a background for better readability
     const textMeasure = ctx.measureText(text);
     const padding = 4;
     ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
     ctx.fillRect(
-      midX - (textMeasure.width / 2) - padding,
+      midX - textMeasure.width / 2 - padding,
       midY - 16,
       textMeasure.width + padding * 2,
       20
     );
-
-    // Draw text
     ctx.fillStyle = color;
     ctx.textAlign = "center";
     ctx.fillText(text, midX, midY - 2);
   };
 
-  // Function to draw a keypoint
   const drawKeypoint = (
     ctx: CanvasRenderingContext2D,
     x: number,
     y: number,
     label: string,
     confidence: number,
-    isFullSize: boolean = false,
+    isFullSize = false,
   ) => {
-    // Draw the point
     ctx.beginPath();
     const radius = isFullSize ? 5 : 3;
     ctx.arc(x, y, radius, 0, 2 * Math.PI);
-
-    // Color based on confidence
-    if (confidence > 0.7) {
-      ctx.fillStyle = "rgba(0, 255, 0, 0.7)";  // Green for high confidence
-    } else if (confidence > 0.5) {
-      ctx.fillStyle = "rgba(255, 255, 0, 0.7)"; // Yellow for medium confidence
-    } else {
-      ctx.fillStyle = "rgba(255, 0, 0, 0.7)";   // Red for low confidence
-    }
-
+    if (confidence > 0.7) ctx.fillStyle = "rgba(0, 255, 0, 0.7)";
+    else if (confidence > 0.5) ctx.fillStyle = "rgba(255, 255, 0, 0.7)";
+    else ctx.fillStyle = "rgba(255, 0, 0, 0.7)";
     ctx.fill();
-
-    // Only draw labels in full size mode to avoid clutter
     if (isFullSize) {
-      // Draw the label with border for better visibility
       ctx.font = "11px Arial";
-      ctx.fillStyle = "white";
-      ctx.strokeStyle = "black";
-      ctx.lineWidth = 0.5;
-
-      // Add background to text
-      const textMeasure = ctx.measureText(label);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.fillRect(x + 6, y - 10, textMeasure.width + 4, 14);
-
-      // Draw text
+      const tm = ctx.measureText(label);
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(x + 6, y - 10, tm.width + 4, 14);
       ctx.fillStyle = "white";
       ctx.fillText(label, x + 8, y);
     }
   };
 
-  // Function to draw an angle
   const drawAngle = (
     ctx: CanvasRenderingContext2D,
-    point1: Point,
-    point2: Point,
-    point3: Point,
+    p1: Point,
+    p2: Point,
+    p3: Point,
     angleText: string,
     color: string,
-    isFullSize: boolean = false,
+    isFullSize = false,
   ) => {
-    // Draw an arc to represent the angle
     const radius = isFullSize ? 40 : 25;
-    const angle1 = Math.atan2(point1.y - point2.y, point1.x - point2.x);
-    const angle2 = Math.atan2(point3.y - point2.y, point3.x - point2.x);
-
+    const a1 = Math.atan2(p1.y - p2.y, p1.x - p2.x);
+    const a2 = Math.atan2(p3.y - p2.y, p3.x - p2.x);
     ctx.beginPath();
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
     ctx.lineWidth = isFullSize ? 3 : 2;
-    ctx.moveTo(point2.x, point2.y);
-    ctx.arc(point2.x, point2.y, radius, angle1, angle2, false);
+    ctx.moveTo(p2.x, p2.y);
+    ctx.arc(p2.x, p2.y, radius, a1, a2, false);
     ctx.stroke();
-
-    // Draw the angle text
-    const textX = point2.x + (radius + 10) * Math.cos((angle1 + angle2) / 2);
-    const textY = point2.y + (radius + 10) * Math.sin((angle1 + angle2) / 2);
-
+    const textX = p2.x + (radius + 10) * Math.cos((a1 + a2) / 2);
+    const textY = p2.y + (radius + 10) * Math.sin((a1 + a2) / 2);
     ctx.font = isFullSize ? "bold 14px Arial" : "bold 12px Arial";
-
-    // Add background for better readability
-    const textMeasure = ctx.measureText(angleText);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
-    ctx.fillRect(
-      textX - (textMeasure.width / 2) - 2,
-      textY - 10,
-      textMeasure.width + 4,
-      16
-    );
-
-    // Draw text
+    const tm = ctx.measureText(angleText);
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.fillRect(textX - tm.width / 2 - 2, textY - 10, tm.width + 4, 16);
     ctx.fillStyle = color;
     ctx.textAlign = "center";
     ctx.fillText(angleText, textX, textY);
   };
 
-  // Function to draw a legend in full size mode
-  const drawLegend = (
-    ctx: CanvasRenderingContext2D,
-    width: number,
-    height: number
-  ) => {
+  const drawLegend = (ctx: CanvasRenderingContext2D, _w: number, h: number) => {
     const legendX = 20;
-    const legendY = height - 180;
+    const legendY = h - 180;
     const lineLength = 30;
     const padding = 8;
     const lineSpacing = 24;
-
-    // Background for legend
-    ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
     ctx.fillRect(legendX, legendY, 230, 170);
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.3)";
+    ctx.strokeStyle = "rgba(0,0,0,0.3)";
     ctx.lineWidth = 1;
     ctx.strokeRect(legendX, legendY, 230, 170);
-
-    // Title
     ctx.font = "bold 14px Arial";
     ctx.fillStyle = "black";
     ctx.fillText("Measurement Legend:", legendX + padding, legendY + 20);
     ctx.font = "12px Arial";
-
-    // Midline
     let y = legendY + 45;
-    ctx.strokeStyle = "rgba(0, 0, 255, 0.8)";
+    ctx.strokeStyle = "rgba(0,0,255,0.8)";
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(legendX + padding, y);
     ctx.lineTo(legendX + padding + lineLength, y);
     ctx.stroke();
-    ctx.fillStyle = "rgba(0, 0, 255, 0.9)";
+    ctx.fillStyle = "rgba(0,0,255,0.9)";
     ctx.fillText("Midline", legendX + padding + lineLength + 8, y + 4);
-
-    // Sector lines
     y += lineSpacing;
-    ctx.strokeStyle = "rgba(255, 0, 0, 0.7)";
+    ctx.strokeStyle = "rgba(255,0,0,0.7)";
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(legendX + padding, y);
     ctx.lineTo(legendX + padding + lineLength, y);
     ctx.stroke();
-    ctx.fillStyle = "rgba(255, 0, 0, 0.9)";
+    ctx.fillStyle = "rgba(255,0,0,0.9)";
     ctx.fillText("Sector Lines", legendX + padding + lineLength + 8, y + 4);
-
-    // Occlusal plane
     y += lineSpacing;
-    ctx.strokeStyle = "rgba(153, 51, 255, 0.8)";
+    ctx.strokeStyle = "rgba(153,51,255,0.8)";
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(legendX + padding, y);
     ctx.lineTo(legendX + padding + lineLength, y);
     ctx.stroke();
-    ctx.fillStyle = "rgba(153, 51, 255, 0.9)";
+    ctx.fillStyle = "rgba(153,51,255,0.9)";
     ctx.fillText("Occlusal Plane", legendX + padding + lineLength + 8, y + 4);
-
-    // Canine axis
     y += lineSpacing;
-    ctx.strokeStyle = "rgba(255, 204, 0, 0.8)";
+    ctx.strokeStyle = "rgba(255,204,0,0.8)";
     ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.moveTo(legendX + padding, y);
     ctx.lineTo(legendX + padding + lineLength, y);
     ctx.stroke();
-    ctx.fillStyle = "rgba(255, 204, 0, 0.9)";
+    ctx.fillStyle = "rgba(255,204,0,0.9)";
     ctx.fillText("Canine Axis", legendX + padding + lineLength + 8, y + 4);
-
-    // Lateral incisor
     y += lineSpacing;
-    ctx.strokeStyle = "rgba(0, 204, 255, 0.8)";
+    ctx.strokeStyle = "rgba(0,204,255,0.8)";
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(legendX + padding, y);
     ctx.lineTo(legendX + padding + lineLength, y);
     ctx.stroke();
-    ctx.fillStyle = "rgba(0, 204, 255, 0.9)";
+    ctx.fillStyle = "rgba(0,204,255,0.9)";
     ctx.fillText("Lateral Incisor", legendX + padding + lineLength + 8, y + 4);
-
-    // Keypoints
     y += lineSpacing;
-    ctx.fillStyle = "rgba(0, 255, 0, 0.7)";
+    ctx.fillStyle = "rgba(0,255,0,0.7)";
     ctx.beginPath();
-    ctx.arc(legendX + padding + lineLength/2, y, 5, 0, 2 * Math.PI);
+    ctx.arc(legendX + padding + lineLength / 2, y, 5, 0, 2 * Math.PI);
     ctx.fill();
     ctx.fillStyle = "black";
     ctx.fillText("Keypoints", legendX + padding + lineLength + 8, y + 4);
   };
+
+  useEffect(() => {
+    if (!result || !originalImage || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+
+    // Helper: keypoint map for fallbacks
+    const kpMap: Record<string, { x: number; y: number; confidence: number } | undefined> = {};
+    if (result && Array.isArray(result.keypoints)) {
+      for (const kp of result.keypoints as any[]) {
+        if (kp && typeof kp.label === "string") {
+          kpMap[kp.label] = { x: Number(kp.x), y: Number(kp.y), confidence: Number(kp.confidence || 0) };
+        }
+      }
+    }
+
+    const getPt = (label: string): Point | undefined => {
+      const v = kpMap[label];
+      return v ? { x: v.x, y: v.y } : undefined;
+    };
+
+    const midpoint = (a?: Point, b?: Point): Point | undefined => (a && b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } : undefined);
+
+    const angleBetweenLinesDeg = (l1?: Line, l2?: Line): number | undefined => {
+      if (!l1 || !l2) return undefined;
+      const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
+      const v2 = { x: l2.end.x - l2.start.x, y: l2.end.y - l2.start.y };
+      const n1 = Math.hypot(v1.x, v1.y);
+      const n2 = Math.hypot(v2.x, v2.y);
+      if (n1 === 0 || n2 === 0) return undefined;
+      const cos = Math.max(-1, Math.min(1, (v1.x * v2.x + v1.y * v2.y) / (n1 * n2)));
+      return (Math.acos(cos) * 180) / Math.PI;
+    };
+
+    const computeFallbackGeometry = (side: "right" | "left") => {
+      const isRight = side === "right";
+      const cRoot = getPt(isRight ? "r13" : "r23");
+      const cCrown = getPt(isRight ? "c13" : "c23");
+      const lRoot = getPt(isRight ? "r12" : "r22");
+      const lCrown = getPt(isRight ? "c12" : "c22");
+      const ceRoot = getPt(isRight ? "r11" : "r21");
+      const ceCrown = getPt(isRight ? "c11" : "c21");
+      const p1Root = getPt(isRight ? "r14" : "r24");
+      const p1Crown = getPt(isRight ? "c14" : "c24");
+      const p2Root = getPt(isRight ? "r15" : "r25");
+      const p2Crown = getPt(isRight ? "c15" : "c25");
+      const m1pt = getPt("m1");
+      const m2pt = getPt("m2");
+      const mb = getPt(isRight ? "mb16" : "mb26");
+      const geom: any = {};
+      if (m1pt && m2pt) geom.midline = { start: m1pt, end: m2pt } as Line;
+      if (m2pt && mb) geom.occlusal_plane = { start: m2pt, end: mb } as Line;
+      const L1s = midpoint(ceRoot, lRoot);
+      const L1e = midpoint(ceCrown, lCrown);
+      const L2s = midpoint(lRoot, cRoot);
+      const L2e = midpoint(lCrown, cCrown);
+      const L3s = midpoint(cRoot, p1Root);
+      const L3e = midpoint(cCrown, p1Crown);
+      const L4s = midpoint(p1Root, p2Root);
+      const L4e = midpoint(p1Crown, p2Crown);
+      const sector_lines: any = {};
+      if (L1s && L1e) sector_lines.L1 = { start: L1s, end: L1e } as Line;
+      if (L2s && L2e) sector_lines.L2 = { start: L2s, end: L2e } as Line;
+      if (L3s && L3e) sector_lines.L3 = { start: L3s, end: L3e } as Line;
+      if (L4s && L4e) sector_lines.L4 = { start: L4s, end: L4e } as Line;
+      if (Object.keys(sector_lines).length > 0) geom.sector_lines = sector_lines;
+      if (cRoot && cCrown) geom.canine_axis = { start: cRoot, end: cCrown } as Line;
+      if (lRoot && lCrown) geom.lateral_axis = { start: lRoot, end: lCrown } as Line;
+      const angles: any = {};
+      if (geom.canine_axis && geom.midline) {
+        const v = angleBetweenLinesDeg(geom.canine_axis, geom.midline);
+        if (typeof v === "number") angles.angle_with_midline = { value: v };
+      }
+      if (geom.canine_axis && geom.lateral_axis) {
+        const v = angleBetweenLinesDeg(geom.canine_axis, geom.lateral_axis);
+        if (typeof v === "number") angles.angle_with_lateral = { value: v };
+      }
+      if (geom.canine_axis && geom.occlusal_plane) {
+        const v = angleBetweenLinesDeg(geom.canine_axis, geom.occlusal_plane);
+        if (typeof v === "number") angles.angle_with_occlusal = { value: v };
+      }
+      if (Object.keys(angles).length > 0) geom.fallback_angles = angles;
+      return geom;
+    };
+
+    const drawAllMeasurements = (
+      ctx: CanvasRenderingContext2D,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      analysis: any,
+      width: number,
+      height: number,
+      scaleX: number,
+      scaleY: number,
+    ) => {
+      const sx = (x: number) => x * scaleX;
+      const sy = (y: number) => y * scaleY;
+
+      const right = analysis?.side_analyses?.right || {};
+      const left = analysis?.side_analyses?.left || {};
+      const fbRight = computeFallbackGeometry("right");
+      const fbLeft = computeFallbackGeometry("left");
+
+      // Background image must already be drawn by caller
+
+      // Midline (global)
+      const midline: Line | undefined = analysis.midline || right.midline || left.midline || fbRight.midline || fbLeft.midline;
+      if (midline) {
+        drawLine(ctx, { start: { x: sx(midline.start.x), y: sy(midline.start.y) }, end: { x: sx(midline.end.x), y: sy(midline.end.y) } }, "rgba(0,0,255,0.8)", fullSize ? 3 : 2);
+        drawLabel(ctx, { start: { x: sx(midline.start.x), y: sy(midline.start.y) }, end: { x: sx(midline.end.x), y: sy(midline.end.y) } }, "Midline", "rgba(0,0,255,0.8)", fullSize);
+      }
+
+      const drawSectors = (sl?: any) => {
+        if (!sl) return;
+        const drawBoundary = (lineObj: Line | undefined, label: string, color: string) => {
+          if (!lineObj) return;
+          const L = { start: { x: sx(lineObj.start.x), y: sy(lineObj.start.y) }, end: { x: sx(lineObj.end.x), y: sy(lineObj.end.y) } };
+          drawLine(ctx, L, color, fullSize ? 3 : 2);
+          drawLabel(ctx, L, label, color, fullSize);
+        };
+        if (sl.L1 || sl.L2 || sl.L3 || sl.L4) {
+          drawBoundary(sl.L1, "L1", "rgba(255,0,0,0.85)");
+          drawBoundary(sl.L2, "L2", "rgba(0,176,80,0.85)");
+          drawBoundary(sl.L3, "L3", "rgba(255,153,0,0.85)");
+          drawBoundary(sl.L4, "L4", "rgba(128,128,128,0.9)");
+        } else {
+          drawBoundary(sl.sector2, "Sector 2", "rgba(255,0,0,0.85)");
+          drawBoundary(sl.sector3, "Sector 3", "rgba(0,176,80,0.85)");
+          drawBoundary(sl.sector4, "Sector 4", "rgba(255,153,0,0.85)");
+        }
+      };
+
+      // Draw sector lines for both sides
+      drawSectors(right.sector_lines || fbRight.sector_lines);
+      drawSectors(left.sector_lines || fbLeft.sector_lines);
+
+      const drawOcclusal = (oc?: Line) => {
+        if (!oc) return;
+        const L = { start: { x: sx(oc.start.x), y: sy(oc.start.y) }, end: { x: sx(oc.end.x), y: sy(oc.end.y) } };
+        drawLine(ctx, L, "rgba(153,51,255,0.8)", fullSize ? 3 : 2);
+        drawLabel(ctx, L, "Occlusal Plane", "rgba(153,51,255,0.8)", fullSize);
+      };
+      drawOcclusal(right.occlusal_plane || fbRight.occlusal_plane);
+      drawOcclusal(left.occlusal_plane || fbLeft.occlusal_plane);
+
+      const drawAxis = (axis?: Line, label = "Canine Axis", color = "rgba(255,204,0,0.8)", width = fullSize ? 4 : 3) => {
+        if (!axis) return;
+        const L = { start: { x: sx(axis.start.x), y: sy(axis.start.y) }, end: { x: sx(axis.end.x), y: sy(axis.end.y) } };
+        drawLine(ctx, L, color, width);
+        drawLabel(ctx, L, label, color, fullSize);
+      };
+      drawAxis(right.canine_axis || fbRight.canine_axis, "Canine Axis", "rgba(255,204,0,0.8)", fullSize ? 4 : 3);
+      drawAxis(left.canine_axis || fbLeft.canine_axis, "Canine Axis", "rgba(255,204,0,0.8)", fullSize ? 4 : 3);
+      drawAxis(right.lateral_axis || fbRight.lateral_axis, "Lateral Incisor", "rgba(0,204,255,0.8)", fullSize ? 3 : 2);
+      drawAxis(left.lateral_axis || fbLeft.lateral_axis, "Lateral Incisor", "rgba(0,204,255,0.8)", fullSize ? 3 : 2);
+
+      // Keypoints (draw all so both sides visible)
+      if (Array.isArray(result?.keypoints)) {
+        for (const kp of result.keypoints as any[]) {
+          drawKeypoint(ctx, sx(kp.x), sy(kp.y), kp.label, kp.confidence, fullSize);
+        }
+      }
+
+      // ROI boxes
+      const roi = analysis?.roi;
+      if (roi && roi.sides) {
+        for (const [side, info] of Object.entries<any>(roi.sides)) {
+          if (!info?.bbox || info.bbox.length < 4) continue;
+          const [x1, y1, x2, y2] = info.bbox as number[];
+          const impacted = Boolean(info.impacted);
+          const prob = typeof info.prob === "number" ? info.prob : 0;
+          const color = impacted ? "rgba(239,68,68,0.95)" : "rgba(34,197,94,0.95)";
+          const lw = fullSize ? (side === activeSide ? 4 : 3) : (side === activeSide ? 3 : 2);
+          const label = `${side.toUpperCase()} ${Math.round(prob * 100)}% ${impacted ? "Impacted" : "Normal"}`;
+          drawRectWithLabel(ctx, sx(x1), sy(y1), sx(x2), sy(y2), color, label, fullSize, lw);
+        }
+      }
+
+      // Angles per side
+      const drawAnglesFor = (angles: any, cx?: Line, ml?: Line, lx?: Line, oc?: Line) => {
+        if (!angles || !cx) return;
+        if (angles.angle_with_midline && ml) {
+          const val = angles.angle_with_midline.value ?? angleBetweenLinesDeg(cx, ml) ?? 0;
+          drawAngle(ctx, { x: sx(cx.end.x), y: sy(cx.end.y) }, { x: sx(cx.start.x), y: sy(cx.start.y) }, { x: sx(ml.end.x), y: sy(ml.end.y) }, `${val.toFixed(1)}°`, "rgba(0,0,255,0.7)", fullSize);
+        }
+        if (angles.angle_with_lateral && lx) {
+          const val = angles.angle_with_lateral.value ?? angleBetweenLinesDeg(cx, lx) ?? 0;
+          drawAngle(ctx, { x: sx(cx.end.x), y: sy(cx.end.y) }, { x: sx(cx.start.x), y: sy(cx.start.y) }, { x: sx(lx.end.x), y: sy(lx.end.y) }, `${val.toFixed(1)}°`, "rgba(255,165,0,0.7)", fullSize);
+        }
+        if (angles.angle_with_occlusal && oc) {
+          const val = angles.angle_with_occlusal.value ?? angleBetweenLinesDeg(cx, oc) ?? 0;
+          drawAngle(ctx, { x: sx(cx.end.x), y: sy(cx.end.y) }, { x: sx(cx.start.x), y: sy(cx.start.y) }, { x: sx(oc.end.x), y: sy(oc.end.y) }, `${val.toFixed(1)}°`, "rgba(128,0,128,0.7)", fullSize);
+        }
+      };
+
+      drawAnglesFor(right.angle_measurements || fbRight.fallback_angles, right.canine_axis || fbRight.canine_axis, midline, right.lateral_axis || fbRight.lateral_axis, right.occlusal_plane || fbRight.occlusal_plane);
+      drawAnglesFor(left.angle_measurements || fbLeft.fallback_angles, left.canine_axis || fbLeft.canine_axis, midline, left.lateral_axis || fbLeft.lateral_axis, left.occlusal_plane || fbLeft.occlusal_plane);
+
+      if (fullSize) drawLegend(ctx, width, height);
+
+      if (fullSize && analysis?.side_analyses) {
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(20, 20, 140, 36);
+        ctx.font = "bold 18px Arial";
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "left";
+        ctx.fillText("BOTH SIDES", 30, 44);
+      }
+
+      if (fullSize && analysis?.roi) {
+        const usedSource: string = analysis.roi.used_source || "-";
+        const thrVal: number = typeof analysis.roi.threshold === "number" ? analysis.roi.threshold : 0.5;
+        drawRoiInfoBadge(ctx, `ROI: ${usedSource}  |  thr=${thrVal.toFixed(2)}`);
+      }
+    };
+
+    img.onload = () => {
+      setIsLoading(false);
+      let canvasWidth = img.width;
+      let canvasHeight = img.height;
+      if (fullSize) {
+        const maxWidth = window.innerWidth * 0.85;
+        const maxHeight = window.innerHeight * 0.75;
+        const imgRatio = img.width / img.height;
+        if (img.width / maxWidth > img.height / maxHeight) {
+          canvasWidth = maxWidth;
+          canvasHeight = canvasWidth / imgRatio;
+        } else {
+          canvasHeight = maxHeight;
+          canvasWidth = canvasHeight * imgRatio;
+        }
+      }
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+      ctx.drawImage(img, 0, 0, canvasWidth, canvasHeight);
+      drawAllMeasurements(ctx, result.analysis, canvasWidth, canvasHeight, canvasWidth / img.width, canvasHeight / img.height);
+    };
+
+    img.src = originalImage;
+
+    return () => {
+      img.onload = null;
+    };
+  }, [result, originalImage, fullSize, activeSide]);
+
 
   return (
     <div className={`relative ${fullSize ? 'w-full h-full' : ''}`}>
