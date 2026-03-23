@@ -11,7 +11,8 @@ from pathlib import Path
 from PIL import Image
 import torch
 from config import db
-from models import KeypointDetection, Keypoint
+from models import KeypointDetection, Keypoint, CorrectedKeypoint, CorrectedImage
+import shutil
 
 class KeypointDetectionService:
     def __init__(self, app=None):
@@ -49,6 +50,76 @@ class KeypointDetectionService:
         file_path = os.path.join(self.upload_folder, filename)
         image_file.save(file_path)
         return file_path
+
+    def generate_result_image_with_keypoints(self, image_path, keypoints_dict):
+        """
+        Generate a result image with keypoints drawn on it
+        
+        Args:
+            image_path: Path to the original image
+            keypoints_dict: Dictionary mapping label to {"x": x, "y": y, "confidence": conf}
+            
+        Returns:
+            Path to the generated result image
+        """
+        try:
+            # Load the original image
+            img = cv2.imread(image_path)
+            if img is None:
+                self.app.logger.error(f"Could not load image from {image_path}")
+                return None
+            
+            # Get category names for colors
+            category_names = self._get_category_names()
+            
+            # Draw keypoints on the image
+            for label, coords in keypoints_dict.items():
+                x = int(coords["x"])
+                y = int(coords["y"])
+                confidence = coords.get("confidence", 0.8)
+                
+                # Get color based on confidence
+                if confidence > 0.7:
+                    color = (0, 255, 0)  # Green
+                elif confidence > 0.5:
+                    color = (0, 255, 255)  # Yellow
+                else:
+                    color = (0, 0, 255)  # Red
+                
+                # Draw keypoint circle
+                cv2.circle(img, (x, y), 5, color, -1, lineType=cv2.LINE_AA)
+                cv2.circle(img, (x, y), 5, (255, 255, 255), 1, lineType=cv2.LINE_AA)
+                
+                # Draw label text
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.4
+                thickness = 1
+                text_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
+                
+                # Background for text
+                text_x = x + 6
+                text_y = y - 6
+                cv2.rectangle(img, 
+                            (text_x - 2, text_y - text_size[1] - 2),
+                            (text_x + text_size[0] + 2, text_y + 2),
+                            (0, 0, 0), -1)
+                
+                # Text
+                cv2.putText(img, label, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            
+            # Generate unique filename for results
+            result_filename = f"{uuid.uuid4().hex}_result.jpg"
+            result_path = os.path.join(self.results_folder, result_filename)
+            
+            # Save the result image
+            cv2.imwrite(result_path, img)
+            
+            return result_path
+            
+        except Exception as e:
+            self.app.logger.error(f"Error generating result image with keypoints: {str(e)}")
+            self.app.logger.error(traceback.format_exc())
+            return None
 
     def detect_keypoints(self, image_path, user_id, segmentation_data=None, roi_results=None):
         """Process image with YOLO and detect keypoints"""
@@ -105,34 +176,46 @@ class KeypointDetectionService:
                         # Format is [num_keypoints, 2] (x, y) without confidence
                         self.app.logger.info("Keypoint format: [num_keypoints, 2] (x, y coordinates only)")
 
-                        # Use a default confidence of 0.8 for detected points
+                        # Use a default confidence based on model confidence
                         model_confidence = float(results[0].boxes.conf[0]) if hasattr(results[0], 'boxes') and len(results[0].boxes) > 0 else 0.7
                         
-                        default_confidence = min(0.7, max(0.5, model_confidence))
-                        
-                        overall_confidence = default_confidence
-                        keypoints_count = len(kpts)
+                        keypoints_count = 0
+                        confidence_sum = 0.0
 
-                        # Store keypoint data with default confidence
+                        # Store keypoint data with individual confidence calculation
                         for i, kp in enumerate(kpts):
                             if i < len(category_names):
                                 label = category_names[i]
                             else:
                                 label = f"point_{i}"
 
+                            # Calculate individual confidence based on position and label importance
+                            individual_confidence = self._calculate_individual_keypoint_confidence(
+                                label, float(kp[0]), float(kp[1]), model_confidence, len(kpts), len(category_names)
+                            )
+
                             keypoints_data.append({
                                 "label": label,
                                 "x": float(kp[0]),
                                 "y": float(kp[1]),
-                                "confidence": default_confidence
+                                "confidence": individual_confidence
                             })
 
                             # Add to keypoints dict
                             keypoints_dict[label] = {
                                 "x": float(kp[0]),
                                 "y": float(kp[1]),
-                                "confidence": default_confidence
+                                "confidence": individual_confidence
                             }
+                            
+                            confidence_sum += individual_confidence
+                            keypoints_count += 1
+
+                        # Calculate overall confidence from individual confidences
+                        if keypoints_count > 0:
+                            overall_confidence = confidence_sum / keypoints_count
+                        else:
+                            overall_confidence = 0.3
 
                     elif len(kpts.shape) >= 2 and kpts.shape[1] >= 3:
                         # Format is [num_keypoints, 3] (x, y, conf)
@@ -163,20 +246,11 @@ class KeypointDetectionService:
                                 confidence_sum += conf
                                 keypoints_count += 1
 
-                        # Calculate average confidence
+                        # Calculate average confidence from keypoint confidences
                         if keypoints_count > 0:
                             overall_confidence = confidence_sum / keypoints_count
-                            expected_keypoints = len(category_names)
-                            if expected_keypoints > 0:
-                                completeness_factor = min(1.0, keypoints_count / expected_keypoints)
-                                confidence_score = confidence_score * (0.7 + 0.3 * completeness_factor)
-                            
-                            critical_points = ["m1", "m2", "r13", "c13"] 
-                            missing_critical = any(point not in keypoints_dict for point in critical_points)
-                            if missing_critical:
-                                confidence_score = confidence_score * 0.8
                         else:
-                            confidence_score = 0.3
+                            overall_confidence = 0.3
 
                     # Check confidence and keypoints coverage
                     required_points = ["m1", "m2", "r11", "r12", "r13", "r14", "r15",
@@ -889,6 +963,51 @@ class KeypointDetectionService:
 
         return overlap_area
 
+    def _calculate_individual_keypoint_confidence(self, label, x, y, model_confidence, detected_count, expected_count):
+        """Calculate individual confidence for each keypoint based on various factors"""
+        try:
+            # Base confidence from model
+            base_conf = model_confidence
+            
+            # Importance weights for different keypoint types
+            importance_weights = {
+                # Critical midline points
+                "m1": 1.0, "m2": 1.0,
+                # Canine points (most important for this analysis)
+                "c13": 1.2, "r13": 1.2, "c23": 1.2, "r23": 1.2,
+                # Incisor points
+                "c11": 1.1, "r11": 1.1, "c12": 1.1, "r12": 1.1,
+                "c21": 1.1, "r21": 1.1, "c22": 1.1, "r22": 1.1,
+                # Premolar points
+                "c14": 0.9, "r14": 0.9, "c15": 0.9, "r15": 0.9,
+                "c24": 0.9, "r24": 0.9, "c25": 0.9, "r25": 0.9,
+                # Molar points
+                "mb16": 0.8, "mb26": 0.8,
+                # Crown points generally more reliable than root points
+                "c11": 1.05, "c12": 1.05, "c13": 1.25, "c14": 1.0, "c15": 1.0,
+                "c21": 1.05, "c22": 1.05, "c23": 1.25, "c24": 1.0, "c25": 1.0,
+            }
+            
+            # Apply importance weight
+            weight = importance_weights.get(label, 1.0)
+            
+            # Detection completeness factor
+            completeness_factor = detected_count / expected_count if expected_count > 0 else 1.0
+            
+            # Position-based confidence (points near image center are generally more reliable)
+            # This is a simplified assumption - you might want to adjust based on your specific use case
+            center_factor = 1.0  # Could be calculated based on distance from image center
+            
+            # Calculate final confidence
+            individual_conf = base_conf * weight * completeness_factor * center_factor
+            
+            # Clamp to reasonable range
+            return min(0.95, max(0.1, individual_conf))
+            
+        except Exception as e:
+            self.app.logger.error(f"Error calculating individual confidence: {str(e)}")
+            return model_confidence  # Fallback to model confidence
+
     def _get_category_names(self):
         """Load category names from notes.json or use defaults"""
         try:
@@ -970,8 +1089,8 @@ class KeypointDetectionService:
                 detection_dict = {
                     'id': detection.id,
                     'user_id': detection.user_id,
-                    'image_path': detection.image_path,
-                    'result_path': detection.result_path,
+                    'image_path': os.path.basename(detection.image_path) if detection.image_path else None,
+                    'result_path': os.path.basename(detection.result_path) if detection.result_path else None,
                     'confidence_score': detection.confidence_score,
                     'prediction_result': detection.prediction_result,
                     'created_at': detection.created_at.isoformat()
@@ -991,3 +1110,592 @@ class KeypointDetectionService:
         except Exception as e:
             self.app.logger.error(f"Error retrieving user history: {str(e)}")
             return []
+
+    def recalculate_analysis_with_keypoints(self, detection_id, updated_keypoints, user_id=None):
+        """
+        Recalculate dental analysis with updated keypoints and save corrected keypoints to separate table
+        
+        Args:
+            detection_id: The detection ID
+            updated_keypoints: List of keypoint dictionaries with label, x, y, confidence
+            user_id: User ID who made the correction (for corrected_keypoints table)
+            
+        Returns:
+            Dictionary with updated analysis results
+        """
+        try:
+            # Get detection from database
+            detection = KeypointDetection.query.get(detection_id)
+            if not detection:
+                raise ValueError(f"Detection {detection_id} not found")
+
+            # Get user_id from detection if not provided
+            if user_id is None:
+                user_id = detection.user_id
+
+            # Get original keypoints to compare
+            original_keypoints_map = {}
+            original_keypoints = Keypoint.query.filter_by(detection_id=detection_id).all()
+            for orig_kp in original_keypoints:
+                original_keypoints_map[orig_kp.label] = {
+                    'x': orig_kp.x_coord,
+                    'y': orig_kp.y_coord,
+                    'confidence': orig_kp.confidence
+                }
+
+            # Update keypoints in database and save corrected ones
+            keypoints_dict = {}
+            for kp_data in updated_keypoints:
+                label = kp_data.get("label")
+                x = float(kp_data.get("x"))
+                y = float(kp_data.get("y"))
+                confidence = float(kp_data.get("confidence", 1.0))
+                
+                # Get original values
+                original_x = None
+                original_y = None
+                original_confidence = None
+                if label in original_keypoints_map:
+                    original_x = original_keypoints_map[label]['x']
+                    original_y = original_keypoints_map[label]['y']
+                    original_confidence = original_keypoints_map[label]['confidence']
+                
+                # Check if values have changed (only save if changed)
+                values_changed = (
+                    original_x is None or 
+                    original_y is None or 
+                    abs(x - original_x) > 0.1 or 
+                    abs(y - original_y) > 0.1
+                )
+                
+                # Save corrected keypoint if values changed
+                if values_changed:
+                    # Check if corrected keypoint already exists for this detection and label
+                    existing_corrected = CorrectedKeypoint.query.filter_by(
+                        detection_id=detection_id,
+                        label=label
+                    ).first()
+                    
+                    if existing_corrected:
+                        # Update existing corrected keypoint
+                        existing_corrected.x_coord = x
+                        existing_corrected.y_coord = y
+                        existing_corrected.confidence = confidence
+                        existing_corrected.original_x = original_x
+                        existing_corrected.original_y = original_y
+                        existing_corrected.original_confidence = original_confidence
+                    else:
+                        # Create new corrected keypoint record
+                        corrected_kp = CorrectedKeypoint(
+                            detection_id=detection_id,
+                            user_id=user_id,
+                            label=label,
+                            x_coord=x,
+                            y_coord=y,
+                            confidence=confidence,
+                            original_x=original_x,
+                            original_y=original_y,
+                            original_confidence=original_confidence
+                        )
+                        db.session.add(corrected_kp)
+                
+                # Update keypoints in database (for display/analysis)
+                # Only update confidence if the keypoint was actually corrected
+                keypoint = Keypoint.query.filter_by(detection_id=detection_id, label=label).first()
+                if keypoint:
+                    keypoint.x_coord = x
+                    keypoint.y_coord = y
+                    # Only update confidence if the keypoint was manually corrected
+                    if values_changed:
+                        keypoint.confidence = confidence
+                    # Otherwise keep the original confidence
+                else:
+                    keypoint = Keypoint(
+                        detection_id=detection_id,
+                        label=label,
+                        x_coord=x,
+                        y_coord=y,
+                        confidence=confidence
+                    )
+                    db.session.add(keypoint)
+                
+                # Use original confidence if keypoint wasn't corrected
+                final_confidence = confidence if values_changed else (original_confidence if original_confidence is not None else confidence)
+                keypoints_dict[label] = {"x": x, "y": y, "confidence": final_confidence}
+
+            db.session.commit()
+
+            # Get segmentation data if available
+            segmentation_data = None
+            if detection.segmentation_path and os.path.exists(detection.segmentation_path):
+                # Try to get segmentation data from analysis_json if stored
+                try:
+                    if detection.analysis_json:
+                        analysis = json.loads(detection.analysis_json)
+                        if "roi" in analysis and "segmentations" in analysis.get("roi", {}):
+                            segmentation_data = {"segmentations": analysis["roi"]["segmentations"]}
+                except:
+                    pass
+
+            # Get image width for analysis (try to get from original image)
+            img_width = 1000  # default
+            try:
+                if detection.image_path and os.path.exists(detection.image_path):
+                    from PIL import Image
+                    img = Image.open(detection.image_path)
+                    img_width = img.width
+            except:
+                pass
+
+            # Get existing analysis_json and update it
+            existing_analysis = {}
+            if detection.analysis_json:
+                try:
+                    existing_analysis = json.loads(detection.analysis_json)
+                except:
+                    existing_analysis = {}
+
+            # Recalculate dental analysis for BOTH sides
+            required_points = ["m1", "m2", "r11", "r12", "r13", "r14", "r15",
+                              "r21", "r22", "r23", "r24", "r25",
+                              "c11", "c12", "c13", "c14", "c15",
+                              "c21", "c22", "c23", "c24", "c25",
+                              "mb16", "mb26"]
+            
+            # Determine which sides to analyze based on available keypoints
+            left_points = [p for p in required_points if p.startswith(("r2", "c2")) and p in keypoints_dict]
+            right_points = [p for p in required_points if p.startswith(("r1", "c1")) and p in keypoints_dict]
+            
+            sides_to_analyze = []
+            if len(right_points) > 0:
+                sides_to_analyze.append("right")
+            if len(left_points) > 0:
+                sides_to_analyze.append("left")
+            
+            # If no side detected, analyze based on which has more points
+            if not sides_to_analyze:
+                if len(right_points) >= len(left_points):
+                    sides_to_analyze = ["right"]
+                else:
+                    sides_to_analyze = ["left"]
+            
+            # Initialize side_analyses if not present
+            if "side_analyses" not in existing_analysis:
+                existing_analysis["side_analyses"] = {}
+            
+            # Recalculate analysis for each side
+            for side in sides_to_analyze:
+                analysis_results = self.perform_dental_analysis(
+                    keypoints_dict, 
+                    segmentation_data, 
+                    side=side, 
+                    img_width=img_width
+                )
+                existing_analysis["side_analyses"][side] = analysis_results
+
+            # Recalculate ROI and dental_analysis if services are available
+            roi_results = None
+            dental_results = None
+            try:
+                # Import services here to avoid circular imports
+                from services import roi_service, dental_analysis_service
+                from flask import current_app
+                
+                # Recalculate ROI with updated keypoints
+                if detection.image_path and os.path.exists(detection.image_path):
+                    roi_threshold = float(current_app.config.get('ROI_THRESHOLD', 0.15)) if current_app else 0.15
+                    roi_results = roi_service.predict_from_image(
+                        image_path=detection.image_path,
+                        segmentation_data=segmentation_data,
+                        keypoints_dict=keypoints_dict,
+                        threshold=roi_threshold,
+                    )
+                    
+                    # Recalculate dental analysis
+                    dental_results = dental_analysis_service.analyze(
+                        image_path=detection.image_path,
+                        segmentation_data=segmentation_data,
+                        keypoints=keypoints_dict,
+                    )
+            except Exception as e:
+                self.app.logger.warning(f"Failed to recalculate ROI/dental analysis: {str(e)}")
+                # Keep existing ROI/dental results if recalculation fails
+                if "roi" in existing_analysis:
+                    roi_results = existing_analysis["roi"]
+                if "dental_analysis" in existing_analysis:
+                    dental_results = existing_analysis["dental_analysis"]
+
+            # Update ROI results if recalculated
+            if roi_results:
+                existing_analysis["roi"] = roi_results
+
+            # Update dental analysis if recalculated
+            if dental_results:
+                existing_analysis["dental_analysis"] = dental_results
+
+            # Update prediction result based on analysis from all sides
+            # If ROI results available, use ROI prediction (but keep severe-impacted override)
+            if roi_results and "prediction_result" in roi_results:
+                roi_pred = roi_results["prediction_result"]
+                # Check all sides for severe-impacted override
+                all_predictions = [s.get("prediction_result", "unknown") for s in existing_analysis["side_analyses"].values()]
+                if "severely impacted" in all_predictions:
+                    final_prediction = "severely impacted"
+                else:
+                    final_prediction = roi_pred
+            else:
+                # Fallback to keypoint-based prediction from all sides
+                if "side_analyses" in existing_analysis and existing_analysis["side_analyses"]:
+                    # Check all sides for final prediction
+                    all_predictions = [s.get("prediction_result", "unknown") for s in existing_analysis["side_analyses"].values()]
+                    if "severely impacted" in all_predictions:
+                        final_prediction = "severely impacted"
+                    elif "impacted" in all_predictions:
+                        final_prediction = "impacted"
+                    else:
+                        final_prediction = all_predictions[0] if all_predictions else "unknown"
+                else:
+                    final_prediction = "unknown"
+
+            existing_analysis["prediction_result"] = final_prediction
+
+            # Update legacy fields from side_analyses for backward compatibility
+            # Use the first side (or prefer "right" if available) for legacy fields
+            if "side_analyses" in existing_analysis and existing_analysis["side_analyses"]:
+                # Prefer "right" side, otherwise use the first available side
+                legacy_side_data = None
+                if "right" in existing_analysis["side_analyses"]:
+                    legacy_side_data = existing_analysis["side_analyses"]["right"]
+                else:
+                    # Use first available side
+                    first_side = list(existing_analysis["side_analyses"].keys())[0]
+                    legacy_side_data = existing_analysis["side_analyses"][first_side]
+                
+                if legacy_side_data:
+                    # Update legacy fields from side_analyses data
+                    if "sector_analysis" in legacy_side_data:
+                        existing_analysis["sector_analysis"] = legacy_side_data["sector_analysis"]
+                    if "canine_assessment" in legacy_side_data:
+                        existing_analysis["canine_assessment"] = legacy_side_data["canine_assessment"]
+                    if "angle_measurements" in legacy_side_data:
+                        existing_analysis["angle_measurements"] = legacy_side_data["angle_measurements"]
+
+            # Generate new result image with corrected keypoints
+            new_result_path = None
+            if detection.image_path and os.path.exists(detection.image_path):
+                new_result_path = self.generate_result_image_with_keypoints(
+                    detection.image_path, 
+                    keypoints_dict
+                )
+                if new_result_path:
+                    # Update result_path to point to the new image
+                    detection.result_path = new_result_path
+                    self.app.logger.info(f"Generated new result image: {new_result_path}")
+            
+            # Save corrected image data for training/development
+            try:
+                # Create folder for corrected images if it doesn't exist
+                corrected_images_folder = os.path.join(os.getcwd(), 'corrected_images')
+                os.makedirs(corrected_images_folder, exist_ok=True)
+                
+                # Copy original image to corrected_images folder
+                original_image_copy_path = None
+                if detection.image_path and os.path.exists(detection.image_path):
+                    original_filename = os.path.basename(detection.image_path)
+                    original_image_copy_path = os.path.join(
+                        corrected_images_folder, 
+                        f"{detection_id}_{original_filename}"
+                    )
+                    shutil.copy2(detection.image_path, original_image_copy_path)
+                
+                # Copy corrected result image if available
+                corrected_result_copy_path = None
+                if new_result_path and os.path.exists(new_result_path):
+                    result_filename = os.path.basename(new_result_path)
+                    corrected_result_copy_path = os.path.join(
+                        corrected_images_folder,
+                        f"{detection_id}_corrected_{result_filename}"
+                    )
+                    shutil.copy2(new_result_path, corrected_result_copy_path)
+                
+                # Format all keypoints for JSON storage
+                all_keypoints = []
+                for label, coords in keypoints_dict.items():
+                    all_keypoints.append({
+                        "label": label,
+                        "x": coords["x"],
+                        "y": coords["y"],
+                        "confidence": coords.get("confidence", 0.8)
+                    })
+                
+                # Create CorrectedImage record
+                corrected_image = CorrectedImage(
+                    detection_id=detection_id,
+                    user_id=user_id,
+                    original_image_path=original_image_copy_path if original_image_copy_path else detection.image_path,
+                    corrected_result_path=corrected_result_copy_path if corrected_result_copy_path else new_result_path,
+                    keypoints_json=json.dumps(all_keypoints)
+                )
+                db.session.add(corrected_image)
+                self.app.logger.info(f"Saved corrected image data for detection {detection_id}")
+            except Exception as e:
+                self.app.logger.error(f"Error saving corrected image data: {str(e)}")
+                self.app.logger.error(traceback.format_exc())
+                # Continue even if saving corrected image fails
+            
+            # Update detection record
+            detection.analysis_json = json.dumps(existing_analysis)
+            detection.prediction_result = final_prediction
+            db.session.commit()
+
+            # Format keypoints for response
+            keypoints_data = []
+            for label, coords in keypoints_dict.items():
+                keypoints_data.append({
+                    "label": label,
+                    "x": coords["x"],
+                    "y": coords["y"],
+                    "confidence": coords.get("confidence", 0.8)
+                })
+
+            # Get result_path for frontend to update image
+            result_path = detection.result_path if detection.result_path else None
+
+            return {
+                "status": "success",
+                "detection_id": detection_id,
+                "keypoints": keypoints_data,
+                "analysis": existing_analysis,
+                "prediction_result": final_prediction,
+                "roi": roi_results,
+                "dental_analysis": dental_results,
+                "result_path": os.path.basename(result_path) if result_path else None
+            }
+
+        except Exception as e:
+            db.session.rollback()
+            self.app.logger.error(f"Error recalculating analysis: {str(e)}")
+            self.app.logger.error(traceback.format_exc())
+            raise
+
+    def preview_analysis_with_keypoints(self, detection_id, updated_keypoints):
+        """
+        Preview dental analysis with updated keypoints WITHOUT saving to database
+        This is used for preview mode before user decides to save
+        
+        Args:
+            detection_id: The detection ID
+            updated_keypoints: List of keypoint dictionaries with label, x, y, confidence
+            
+        Returns:
+            Dictionary with preview analysis results (same format as recalculate_analysis_with_keypoints but without saving)
+        """
+        try:
+            # Get detection from database
+            detection = KeypointDetection.query.get(detection_id)
+            if not detection:
+                raise ValueError(f"Detection {detection_id} not found")
+
+            # Get original keypoints to compare
+            original_keypoints_map = {}
+            original_keypoints = Keypoint.query.filter_by(detection_id=detection_id).all()
+            for orig_kp in original_keypoints:
+                original_keypoints_map[orig_kp.label] = {
+                    'x': orig_kp.x_coord,
+                    'y': orig_kp.y_coord,
+                    'confidence': orig_kp.confidence
+                }
+
+            # Build keypoints_dict from updated_keypoints (without saving to DB)
+            keypoints_dict = {}
+            for kp_data in updated_keypoints:
+                label = kp_data.get("label")
+                x = float(kp_data.get("x"))
+                y = float(kp_data.get("y"))
+                confidence = float(kp_data.get("confidence", 1.0))
+                
+                # Get original values
+                original_x = None
+                original_y = None
+                original_confidence = None
+                if label in original_keypoints_map:
+                    original_x = original_keypoints_map[label]['x']
+                    original_y = original_keypoints_map[label]['y']
+                    original_confidence = original_keypoints_map[label]['confidence']
+                
+                # Check if values have changed
+                values_changed = (
+                    original_x is None or 
+                    original_y is None or 
+                    abs(x - original_x) > 0.1 or 
+                    abs(y - original_y) > 0.1
+                )
+                
+                # Use original confidence if keypoint wasn't corrected
+                final_confidence = confidence if values_changed else (original_confidence if original_confidence is not None else confidence)
+                keypoints_dict[label] = {"x": x, "y": y, "confidence": final_confidence}
+
+            # Get segmentation data if available
+            segmentation_data = None
+            if detection.segmentation_path and os.path.exists(detection.segmentation_path):
+                try:
+                    if detection.analysis_json:
+                        analysis = json.loads(detection.analysis_json)
+                        if "roi" in analysis and "segmentations" in analysis.get("roi", {}):
+                            segmentation_data = {"segmentations": analysis["roi"]["segmentations"]}
+                except:
+                    pass
+
+            # Get image width for analysis
+            img_width = 1000  # default
+            try:
+                if detection.image_path and os.path.exists(detection.image_path):
+                    img = Image.open(detection.image_path)
+                    img_width = img.width
+            except:
+                pass
+
+            # Get existing analysis_json as base
+            existing_analysis = {}
+            if detection.analysis_json:
+                try:
+                    existing_analysis = json.loads(detection.analysis_json)
+                except:
+                    existing_analysis = {}
+
+            # Recalculate dental analysis for BOTH sides
+            required_points = ["m1", "m2", "r11", "r12", "r13", "r14", "r15",
+                              "r21", "r22", "r23", "r24", "r25",
+                              "c11", "c12", "c13", "c14", "c15",
+                              "c21", "c22", "c23", "c24", "c25",
+                              "mb16", "mb26"]
+            
+            # Determine which sides to analyze
+            left_points = [p for p in required_points if p.startswith(("r2", "c2")) and p in keypoints_dict]
+            right_points = [p for p in required_points if p.startswith(("r1", "c1")) and p in keypoints_dict]
+            
+            sides_to_analyze = []
+            if len(right_points) > 0:
+                sides_to_analyze.append("right")
+            if len(left_points) > 0:
+                sides_to_analyze.append("left")
+            
+            if not sides_to_analyze:
+                if len(right_points) >= len(left_points):
+                    sides_to_analyze = ["right"]
+                else:
+                    sides_to_analyze = ["left"]
+            
+            # Initialize side_analyses if not present
+            if "side_analyses" not in existing_analysis:
+                existing_analysis["side_analyses"] = {}
+            
+            # Recalculate analysis for each side
+            for side in sides_to_analyze:
+                analysis_results = self.perform_dental_analysis(
+                    keypoints_dict, 
+                    segmentation_data, 
+                    side=side, 
+                    img_width=img_width
+                )
+                existing_analysis["side_analyses"][side] = analysis_results
+
+            # Recalculate ROI and dental_analysis if services are available
+            roi_results = None
+            dental_results = None
+            try:
+                from services import roi_service, dental_analysis_service
+                from flask import current_app
+                
+                if detection.image_path and os.path.exists(detection.image_path):
+                    roi_threshold = float(current_app.config.get('ROI_THRESHOLD', 0.15)) if current_app else 0.15
+                    roi_results = roi_service.predict_from_image(
+                        image_path=detection.image_path,
+                        segmentation_data=segmentation_data,
+                        keypoints_dict=keypoints_dict,
+                        threshold=roi_threshold,
+                    )
+                    
+                    dental_results = dental_analysis_service.analyze(
+                        image_path=detection.image_path,
+                        segmentation_data=segmentation_data,
+                        keypoints=keypoints_dict,
+                    )
+            except Exception as e:
+                self.app.logger.warning(f"Failed to recalculate ROI/dental analysis in preview: {str(e)}")
+                if "roi" in existing_analysis:
+                    roi_results = existing_analysis["roi"]
+                if "dental_analysis" in existing_analysis:
+                    dental_results = existing_analysis["dental_analysis"]
+
+            # Update ROI results if recalculated
+            if roi_results:
+                existing_analysis["roi"] = roi_results
+
+            # Update dental analysis if recalculated
+            if dental_results:
+                existing_analysis["dental_analysis"] = dental_results
+
+            # Calculate prediction result
+            if roi_results and "prediction_result" in roi_results:
+                roi_pred = roi_results["prediction_result"]
+                all_predictions = [s.get("prediction_result", "unknown") for s in existing_analysis["side_analyses"].values()]
+                if "severely impacted" in all_predictions:
+                    final_prediction = "severely impacted"
+                else:
+                    final_prediction = roi_pred
+            else:
+                if "side_analyses" in existing_analysis and existing_analysis["side_analyses"]:
+                    all_predictions = [s.get("prediction_result", "unknown") for s in existing_analysis["side_analyses"].values()]
+                    if "severely impacted" in all_predictions:
+                        final_prediction = "severely impacted"
+                    elif "impacted" in all_predictions:
+                        final_prediction = "impacted"
+                    else:
+                        final_prediction = all_predictions[0] if all_predictions else "unknown"
+                else:
+                    final_prediction = "unknown"
+
+            existing_analysis["prediction_result"] = final_prediction
+
+            # Update legacy fields from side_analyses for backward compatibility
+            if "side_analyses" in existing_analysis and existing_analysis["side_analyses"]:
+                legacy_side_data = None
+                if "right" in existing_analysis["side_analyses"]:
+                    legacy_side_data = existing_analysis["side_analyses"]["right"]
+                else:
+                    first_side = list(existing_analysis["side_analyses"].keys())[0]
+                    legacy_side_data = existing_analysis["side_analyses"][first_side]
+                
+                if legacy_side_data:
+                    if "sector_analysis" in legacy_side_data:
+                        existing_analysis["sector_analysis"] = legacy_side_data["sector_analysis"]
+                    if "canine_assessment" in legacy_side_data:
+                        existing_analysis["canine_assessment"] = legacy_side_data["canine_assessment"]
+                    if "angle_measurements" in legacy_side_data:
+                        existing_analysis["angle_measurements"] = legacy_side_data["angle_measurements"]
+
+            # Format keypoints for response
+            keypoints_data = []
+            for label, coords in keypoints_dict.items():
+                keypoints_data.append({
+                    "label": label,
+                    "x": coords["x"],
+                    "y": coords["y"],
+                    "confidence": coords.get("confidence", 0.8)
+                })
+
+            return {
+                "status": "success",
+                "detection_id": detection_id,
+                "keypoints": keypoints_data,
+                "analysis": existing_analysis,
+                "prediction_result": final_prediction,
+                "roi": roi_results,
+                "dental_analysis": dental_results
+            }
+
+        except Exception as e:
+            self.app.logger.error(f"Error previewing analysis: {str(e)}")
+            self.app.logger.error(traceback.format_exc())
+            raise

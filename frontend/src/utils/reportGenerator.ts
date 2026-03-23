@@ -92,7 +92,7 @@ export const generatePDF = async (
   doc.setTextColor(0, 0, 0);
 
   // Add patient info
-  doc.text(`Analysis Date: ${new Date(result.created_at).toLocaleDateString()}`, 20, 40);
+  doc.text(`Analysis Date: ${new Date(result.created_at).toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok' })}`, 20, 40);
   doc.text(`Case ID: ${result.id}`, 20, 50);
 
   // Add prediction result
@@ -373,6 +373,6 @@ export const generatePDF = async (
   }
 
   // Save the PDF with a filename including the case ID and date
-  const dateStr = new Date().toISOString().split('T')[0];
+  const dateStr = new Date().toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok' }).replace(/\//g, '-');
   doc.save(`canine-analysis-${result.id}-${dateStr}.pdf`);
 };

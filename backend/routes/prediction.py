@@ -6,7 +6,7 @@ from PIL import Image
 
 from services import keypoint_service, segmentation_service, roi_service, dental_analysis_service
 from config import db
-from models.keypoint import KeypointDetection
+from models.keypoint import KeypointDetection, CorrectedKeypoint
 import json
 
 prediction_bp = Blueprint('prediction', __name__)
@@ -299,3 +299,163 @@ def uploaded_file(filename):
 @prediction_bp.route('/results/<filename>', methods=['GET'])
 def result_file(filename):
     return send_from_directory(os.path.join(current_app.root_path, 'results'), filename)
+
+@prediction_bp.route('/detection/<detection_id>/keypoints/preview', methods=['POST'])
+@jwt_required()
+def preview_keypoints_analysis(detection_id):
+    """
+    Preview analysis with updated keypoints WITHOUT saving to database
+    Expected request body:
+    {
+        "keypoints": [
+            {"label": "m1", "x": 100.5, "y": 200.3, "confidence": 0.9},
+            ...
+        ]
+    }
+    """
+    user_id = get_jwt_identity()
+
+    try:
+        # Get detection to verify ownership
+        detection = KeypointDetection.query.get(detection_id)
+        if not detection:
+            return jsonify({
+                'status': 'error',
+                'message': 'Detection not found'
+            }), 404
+
+        # Check if the detection belongs to the user
+        if str(detection.user_id) != str(user_id):
+            return jsonify({
+                'status': 'error',
+                'message': 'Unauthorized access to detection'
+            }), 403
+
+        # Get keypoints from request
+        data = request.get_json()
+        if not data or 'keypoints' not in data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Keypoints data is required'
+            }), 400
+
+        updated_keypoints = data['keypoints']
+        if not isinstance(updated_keypoints, list) or len(updated_keypoints) == 0:
+            return jsonify({
+                'status': 'error',
+                'message': 'Keypoints must be a non-empty list'
+            }), 400
+
+        # Validate keypoint structure
+        for kp in updated_keypoints:
+            if not all(key in kp for key in ['label', 'x', 'y']):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Each keypoint must have label, x, and y fields'
+                }), 400
+
+        # Preview analysis with updated keypoints (without saving)
+        result = keypoint_service.preview_analysis_with_keypoints(detection_id, updated_keypoints)
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Analysis preview calculated',
+            **result
+        })
+
+    except ValueError as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 404
+    except Exception as e:
+        current_app.logger.error(f"Error previewing keypoints: {str(e)}")
+        current_app.logger.error(traceback.format_exc())
+        return jsonify({
+            'status': 'error',
+            'message': f'Error previewing keypoints: {str(e)}'
+        }), 500
+
+@prediction_bp.route('/detection/<detection_id>/keypoints', methods=['PUT'])
+@jwt_required()
+def update_keypoints_and_recalculate(detection_id):
+    """
+    Update keypoints and recalculate analysis
+    Expected request body:
+    {
+        "keypoints": [
+            {"label": "m1", "x": 100.5, "y": 200.3, "confidence": 0.9},
+            ...
+        ]
+    }
+    """
+    user_id = get_jwt_identity()
+
+    try:
+        # Get detection to verify ownership
+        detection = KeypointDetection.query.get(detection_id)
+        if not detection:
+            return jsonify({
+                'status': 'error',
+                'message': 'Detection not found'
+            }), 404
+
+        # Check if the detection belongs to the user
+        if str(detection.user_id) != str(user_id):
+            return jsonify({
+                'status': 'error',
+                'message': 'Unauthorized access to detection'
+            }), 403
+
+        # Check if already corrected (only allow one correction)
+        existing_corrected = CorrectedKeypoint.query.filter_by(detection_id=detection_id).first()
+        if existing_corrected:
+            return jsonify({
+                'status': 'error',
+                'message': 'This detection has already been corrected. Only one correction is allowed per detection.'
+            }), 400
+
+        # Get keypoints from request
+        data = request.get_json()
+        if not data or 'keypoints' not in data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Keypoints data is required'
+            }), 400
+
+        updated_keypoints = data['keypoints']
+        if not isinstance(updated_keypoints, list) or len(updated_keypoints) == 0:
+            return jsonify({
+                'status': 'error',
+                'message': 'Keypoints must be a non-empty list'
+            }), 400
+
+        # Validate keypoint structure
+        for kp in updated_keypoints:
+            if not all(key in kp for key in ['label', 'x', 'y']):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Each keypoint must have label, x, and y fields'
+                }), 400
+
+        # Recalculate analysis with updated keypoints (also saves to corrected_keypoints table)
+        result = keypoint_service.recalculate_analysis_with_keypoints(detection_id, updated_keypoints, user_id=user_id)
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Keypoints updated and analysis recalculated',
+            **result
+        })
+
+    except ValueError as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 404
+    except Exception as e:
+        current_app.logger.error(f"Error updating keypoints: {str(e)}")
+        current_app.logger.error(traceback.format_exc())
+        return jsonify({
+            'status': 'error',
+            'message': f'Error updating keypoints: {str(e)}'
+        }), 500

@@ -10,12 +10,27 @@ interface Line {
   end: Point;
 }
 
+interface LineVisibility {
+  midline: boolean;
+  sectorLines: boolean;
+  occlusalPlane: boolean;
+  canineAxis: boolean;
+  lateralAxis: boolean;
+  keypoints: boolean;
+  roiBoxes: boolean;
+  angles: boolean;
+}
+
 interface MeasurementCanvasProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   result: any;
   originalImage: string;
   fullSize?: boolean;
   activeSide?: string; // kept for compatibility (used in ROI label thickness only)
+  lineVisibility?: LineVisibility; // Optional visibility controls
+  editable?: boolean; // Enable keypoint editing
+  editedKeypoints?: Array<{label: string; x: number; y: number; confidence: number}>; // Edited keypoints from parent
+  onKeypointsChange?: (keypoints: Array<{label: string; x: number; y: number; confidence: number}>) => void; // Callback when keypoints are updated
 }
 
 const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
@@ -23,9 +38,31 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
   originalImage,
   fullSize = false,
   activeSide = "right",
+  lineVisibility = {
+    midline: true,
+    sectorLines: true,
+    occlusalPlane: true,
+    canineAxis: true,
+    lateralAxis: true,
+    keypoints: true,
+    roiBoxes: true,
+    angles: true,
+  },
+  editable = false,
+  editedKeypoints: editedKeypointsProp,
+  onKeypointsChange,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Local state for dragging - use prop if available, otherwise use local state as fallback
+  const [localEditedKeypoints, setLocalEditedKeypoints] = useState<Array<{label: string; x: number; y: number; confidence: number}> | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [draggedKeypoint, setDraggedKeypoint] = useState<{label: string; index: number} | null>(null);
+  const [imageWidth, setImageWidth] = useState(0);
+  const [imageHeight, setImageHeight] = useState(0);
+  
+  // Use prop if available, otherwise use local state
+  const editedKeypoints = editedKeypointsProp || localEditedKeypoints;
 
   // Helper: draw a line
   const drawLine = (ctx: CanvasRenderingContext2D, line: Line, color: string, width: number) => {
@@ -126,18 +163,33 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
     label: string,
     confidence: number,
     isFullSize = false,
+    isDragging = false,
   ) => {
     ctx.beginPath();
-    const radius = isFullSize ? 5 : 3;
+    const radius = isFullSize ? (isDragging ? 7 : 5) : (isDragging ? 5 : 3);
     ctx.arc(x, y, radius, 0, 2 * Math.PI);
-    if (confidence > 0.7) ctx.fillStyle = "rgba(0, 255, 0, 0.7)";
-    else if (confidence > 0.5) ctx.fillStyle = "rgba(255, 255, 0, 0.7)";
-    else ctx.fillStyle = "rgba(255, 0, 0, 0.7)";
+    
+    // Highlight when dragging or in edit mode
+    if (isDragging) {
+      ctx.fillStyle = "rgba(0, 150, 255, 0.9)";
+      ctx.strokeStyle = "rgba(0, 100, 255, 1)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    } else if (editable) {
+      ctx.fillStyle = "rgba(255, 200, 0, 0.8)";
+    } else if (confidence > 0.7) {
+      ctx.fillStyle = "rgba(0, 255, 0, 0.7)";
+    } else if (confidence > 0.5) {
+      ctx.fillStyle = "rgba(255, 255, 0, 0.7)";
+    } else {
+      ctx.fillStyle = "rgba(255, 0, 0, 0.7)";
+    }
     ctx.fill();
+    
     if (isFullSize) {
       ctx.font = "11px Arial";
       const tm = ctx.measureText(label);
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillStyle = isDragging ? "rgba(0,0,0,0.8)" : "rgba(0,0,0,0.5)";
       ctx.fillRect(x + 6, y - 10, tm.width + 4, 14);
       ctx.fillStyle = "white";
       ctx.fillText(label, x + 8, y);
@@ -243,6 +295,118 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
     ctx.fillText("Keypoints", legendX + padding + lineLength + 8, y + 4);
   };
 
+  // Initialize local edited keypoints from result when entering edit mode (only if prop not provided)
+  useEffect(() => {
+    if (!editedKeypointsProp && result && Array.isArray(result.keypoints) && editable && (!localEditedKeypoints || localEditedKeypoints.length === 0)) {
+      const kps = result.keypoints.map((kp: any) => ({
+        label: kp.label,
+        x: Number(kp.x),
+        y: Number(kp.y),
+        confidence: Number(kp.confidence || 0.8)
+      }));
+      setLocalEditedKeypoints(kps);
+    } else if (!editable && localEditedKeypoints) {
+      // Clear local edited keypoints when exiting edit mode (only if using local state)
+      setLocalEditedKeypoints(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editable, editedKeypointsProp]); // Depend on editable and prop
+
+  // Mouse event handlers for dragging keypoints
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!editable || !canvasRef.current || !editedKeypoints) return;
+    
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // Get scale factors
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const canvasX = x * scaleX;
+    const canvasY = y * scaleY;
+    
+    // Find clicked keypoint
+    const clickRadius = 10;
+    for (let i = 0; i < editedKeypoints.length; i++) {
+      const kp = editedKeypoints[i];
+      const kpX = kp.x * (canvas.width / imageWidth);
+      const kpY = kp.y * (canvas.height / imageHeight);
+      const dist = Math.sqrt(Math.pow(canvasX - kpX, 2) + Math.pow(canvasY - kpY, 2));
+      
+      if (dist <= clickRadius) {
+        setDraggedKeypoint({ label: kp.label, index: i });
+        canvas.style.cursor = 'grabbing';
+        break;
+      }
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!editable || !canvasRef.current || !editedKeypoints) return;
+    
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    if (draggedKeypoint) {
+      // Update keypoint position - convert canvas coordinates to image coordinates
+      const scaleX = imageWidth / canvas.width;
+      const scaleY = imageHeight / canvas.height;
+      const newX = (x / rect.width) * canvas.width * scaleX;
+      const newY = (y / rect.height) * canvas.height * scaleY;
+      
+      const updated = [...editedKeypoints];
+      updated[draggedKeypoint.index] = {
+        ...updated[draggedKeypoint.index],
+        x: newX,
+        y: newY,
+        confidence: 1.0 // Manual correction = high confidence
+      };
+      
+      // Update via callback if available, otherwise update local state
+      if (onKeypointsChange) {
+        onKeypointsChange(updated);
+      } else {
+        setLocalEditedKeypoints(updated);
+      }
+      
+      // Trigger redraw with updated keypoints - this will recalculate geometry
+      // The useEffect will handle the full redraw when editedKeypoints changes
+    } else {
+      // Check if hovering over a keypoint
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const canvasX = x * scaleX;
+      const canvasY = y * scaleY;
+      
+      let hovering = false;
+      for (const kp of editedKeypoints) {
+        const kpX = kp.x * (canvas.width / imageWidth);
+        const kpY = kp.y * (canvas.height / imageHeight);
+        const dist = Math.sqrt(Math.pow(canvasX - kpX, 2) + Math.pow(canvasY - kpY, 2));
+        if (dist <= 10) {
+          hovering = true;
+          break;
+        }
+      }
+      canvas.style.cursor = hovering ? 'grab' : 'default';
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (draggedKeypoint && editedKeypoints && onKeypointsChange) {
+      // Notify parent component of changes
+      onKeypointsChange(editedKeypoints);
+    }
+    setDraggedKeypoint(null);
+    if (canvasRef.current) {
+      canvasRef.current.style.cursor = 'default';
+    }
+  };
+
   useEffect(() => {
     if (!result || !originalImage || !canvasRef.current) return;
     const canvas = canvasRef.current;
@@ -252,10 +416,13 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
     const img = new Image();
     img.crossOrigin = "Anonymous";
 
-    // Helper: keypoint map for fallbacks
+    // Use edited keypoints if in edit mode, otherwise use original
+    const keypointsToUse = (editable && editedKeypoints) ? editedKeypoints : (result?.keypoints || []);
+
+    // Helper: keypoint map for fallbacks - use edited keypoints for geometry calculations
     const kpMap: Record<string, { x: number; y: number; confidence: number } | undefined> = {};
-    if (result && Array.isArray(result.keypoints)) {
-      for (const kp of result.keypoints as any[]) {
+    if (keypointsToUse && Array.isArray(keypointsToUse)) {
+      for (const kp of keypointsToUse as any[]) {
         if (kp && typeof kp.label === "string") {
           kpMap[kp.label] = { x: Number(kp.x), y: Number(kp.y), confidence: Number(kp.confidence || 0) };
         }
@@ -343,6 +510,7 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
       const sx = (x: number) => x * scaleX;
       const sy = (y: number) => y * scaleY;
 
+      // Always use edited keypoints for geometry calculations (via kpMap)
       const right = analysis?.side_analyses?.right || {};
       const left = analysis?.side_analyses?.left || {};
       const fbRight = computeFallbackGeometry("right");
@@ -350,9 +518,11 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
 
       // Background image must already be drawn by caller
 
-      // Midline (global)
+      // Define midline for use in angles calculation (needed even if not drawn)
       const midline: Line | undefined = analysis.midline || right.midline || left.midline || fbRight.midline || fbLeft.midline;
-      if (midline) {
+
+      // Midline (global)
+      if (lineVisibility.midline && midline) {
         drawLine(ctx, { start: { x: sx(midline.start.x), y: sy(midline.start.y) }, end: { x: sx(midline.end.x), y: sy(midline.end.y) } }, "rgba(0,0,255,0.8)", fullSize ? 3 : 2);
         drawLabel(ctx, { start: { x: sx(midline.start.x), y: sy(midline.start.y) }, end: { x: sx(midline.end.x), y: sy(midline.end.y) } }, "Midline", "rgba(0,0,255,0.8)", fullSize);
       }
@@ -378,8 +548,10 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
       };
 
       // Draw sector lines for both sides
-      drawSectors(right.sector_lines || fbRight.sector_lines);
-      drawSectors(left.sector_lines || fbLeft.sector_lines);
+      if (lineVisibility.sectorLines) {
+        drawSectors(right.sector_lines || fbRight.sector_lines);
+        drawSectors(left.sector_lines || fbLeft.sector_lines);
+      }
 
       const drawOcclusal = (oc?: Line) => {
         if (!oc) return;
@@ -387,8 +559,10 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
         drawLine(ctx, L, "rgba(153,51,255,0.8)", fullSize ? 3 : 2);
         drawLabel(ctx, L, "Occlusal Plane", "rgba(153,51,255,0.8)", fullSize);
       };
-      drawOcclusal(right.occlusal_plane || fbRight.occlusal_plane);
-      drawOcclusal(left.occlusal_plane || fbLeft.occlusal_plane);
+      if (lineVisibility.occlusalPlane) {
+        drawOcclusal(right.occlusal_plane || fbRight.occlusal_plane);
+        drawOcclusal(left.occlusal_plane || fbLeft.occlusal_plane);
+      }
 
       const drawAxis = (axis?: Line, label = "Canine Axis", color = "rgba(255,204,0,0.8)", width = fullSize ? 4 : 3) => {
         if (!axis) return;
@@ -396,30 +570,38 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
         drawLine(ctx, L, color, width);
         drawLabel(ctx, L, label, color, fullSize);
       };
-      drawAxis(right.canine_axis || fbRight.canine_axis, "Canine Axis", "rgba(255,204,0,0.8)", fullSize ? 4 : 3);
-      drawAxis(left.canine_axis || fbLeft.canine_axis, "Canine Axis", "rgba(255,204,0,0.8)", fullSize ? 4 : 3);
-      drawAxis(right.lateral_axis || fbRight.lateral_axis, "Lateral Incisor", "rgba(0,204,255,0.8)", fullSize ? 3 : 2);
-      drawAxis(left.lateral_axis || fbLeft.lateral_axis, "Lateral Incisor", "rgba(0,204,255,0.8)", fullSize ? 3 : 2);
+      if (lineVisibility.canineAxis) {
+        drawAxis(right.canine_axis || fbRight.canine_axis, "Canine Axis", "rgba(255,204,0,0.8)", fullSize ? 4 : 3);
+        drawAxis(left.canine_axis || fbLeft.canine_axis, "Canine Axis", "rgba(255,204,0,0.8)", fullSize ? 4 : 3);
+      }
+      if (lineVisibility.lateralAxis) {
+        drawAxis(right.lateral_axis || fbRight.lateral_axis, "Lateral Incisor", "rgba(0,204,255,0.8)", fullSize ? 3 : 2);
+        drawAxis(left.lateral_axis || fbLeft.lateral_axis, "Lateral Incisor", "rgba(0,204,255,0.8)", fullSize ? 3 : 2);
+      }
 
       // Keypoints (draw all so both sides visible)
-      if (Array.isArray(result?.keypoints)) {
-        for (const kp of result.keypoints as any[]) {
-          drawKeypoint(ctx, sx(kp.x), sy(kp.y), kp.label, kp.confidence, fullSize);
+      const keypointsToDraw = (editable && editedKeypoints) ? editedKeypoints : (result?.keypoints || []);
+      if (lineVisibility.keypoints && Array.isArray(keypointsToDraw)) {
+        for (const kp of keypointsToDraw as any[]) {
+          const isDragging = draggedKeypoint?.label === kp.label;
+          drawKeypoint(ctx, sx(kp.x), sy(kp.y), kp.label, kp.confidence, fullSize, isDragging);
         }
       }
 
       // ROI boxes
-      const roi = analysis?.roi;
-      if (roi && roi.sides) {
-        for (const [side, info] of Object.entries<any>(roi.sides)) {
-          if (!info?.bbox || info.bbox.length < 4) continue;
-          const [x1, y1, x2, y2] = info.bbox as number[];
-          const impacted = Boolean(info.impacted);
-          const prob = typeof info.prob === "number" ? info.prob : 0;
-          const color = impacted ? "rgba(239,68,68,0.95)" : "rgba(34,197,94,0.95)";
-          const lw = fullSize ? (side === activeSide ? 4 : 3) : (side === activeSide ? 3 : 2);
-          const label = `${side.toUpperCase()} ${Math.round(prob * 100)}% ${impacted ? "Impacted" : "Normal"}`;
-          drawRectWithLabel(ctx, sx(x1), sy(y1), sx(x2), sy(y2), color, label, fullSize, lw);
+      if (lineVisibility.roiBoxes) {
+        const roi = analysis?.roi;
+        if (roi && roi.sides) {
+          for (const [side, info] of Object.entries<any>(roi.sides)) {
+            if (!info?.bbox || info.bbox.length < 4) continue;
+            const [x1, y1, x2, y2] = info.bbox as number[];
+            const impacted = Boolean(info.impacted);
+            const prob = typeof info.prob === "number" ? info.prob : 0;
+            const color = impacted ? "rgba(239,68,68,0.95)" : "rgba(34,197,94,0.95)";
+            const lw = fullSize ? (side === activeSide ? 4 : 3) : (side === activeSide ? 3 : 2);
+            const label = `${side.toUpperCase()} ${Math.round(prob * 100)}% ${impacted ? "Impacted" : "Normal"}`;
+            drawRectWithLabel(ctx, sx(x1), sy(y1), sx(x2), sy(y2), color, label, fullSize, lw);
+          }
         }
       }
 
@@ -440,8 +622,10 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
         }
       };
 
-      drawAnglesFor(right.angle_measurements || fbRight.fallback_angles, right.canine_axis || fbRight.canine_axis, midline, right.lateral_axis || fbRight.lateral_axis, right.occlusal_plane || fbRight.occlusal_plane);
-      drawAnglesFor(left.angle_measurements || fbLeft.fallback_angles, left.canine_axis || fbLeft.canine_axis, midline, left.lateral_axis || fbLeft.lateral_axis, left.occlusal_plane || fbLeft.occlusal_plane);
+      if (lineVisibility.angles) {
+        drawAnglesFor(right.angle_measurements || fbRight.fallback_angles, right.canine_axis || fbRight.canine_axis, midline, right.lateral_axis || fbRight.lateral_axis, right.occlusal_plane || fbRight.occlusal_plane);
+        drawAnglesFor(left.angle_measurements || fbLeft.fallback_angles, left.canine_axis || fbLeft.canine_axis, midline, left.lateral_axis || fbLeft.lateral_axis, left.occlusal_plane || fbLeft.occlusal_plane);
+      }
 
       if (fullSize) drawLegend(ctx, width, height);
 
@@ -479,8 +663,26 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
       }
       canvas.width = canvasWidth;
       canvas.height = canvasHeight;
+      setImageWidth(img.width);
+      setImageHeight(img.height);
       ctx.drawImage(img, 0, 0, canvasWidth, canvasHeight);
-      drawAllMeasurements(ctx, result.analysis, canvasWidth, canvasHeight, canvasWidth / img.width, canvasHeight / img.height);
+      
+      // Create a modified result with edited keypoints if in edit mode
+      // This ensures geometry calculations use updated keypoints
+      const resultToUse = editable && editedKeypoints ? {
+        ...result,
+        keypoints: editedKeypoints
+      } : result;
+      
+      // Geometry calculations will use edited keypoints via kpMap
+      drawAllMeasurements(
+        ctx, 
+        resultToUse.analysis, 
+        canvasWidth, 
+        canvasHeight, 
+        canvasWidth / img.width, 
+        canvasHeight / img.height
+      );
     };
 
     img.src = originalImage;
@@ -488,7 +690,7 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
     return () => {
       img.onload = null;
     };
-  }, [result, originalImage, fullSize, activeSide]);
+  }, [result, originalImage, fullSize, activeSide, lineVisibility, editable, editedKeypoints, draggedKeypoint, imageWidth, imageHeight]);
 
 
   return (
@@ -505,7 +707,11 @@ const MeasurementCanvasPanel: React.FC<MeasurementCanvasProps> = ({
 
       <canvas
         ref={canvasRef}
-        className={`${fullSize ? 'max-w-full max-h-[75vh]' : 'max-h-80 w-full'} object-contain mx-auto`}
+        className={`${fullSize ? 'max-w-full max-h-[75vh]' : 'max-h-80 w-full'} object-contain mx-auto ${editable ? 'cursor-grab' : ''}`}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
       />
 
       {/* Indicator badge when in interactive mode */}

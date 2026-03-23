@@ -182,7 +182,7 @@ class ROIClassificationService:
         image_path: str,
         segmentation_data: Optional[Dict[str, Any]] = None,
         keypoints_dict: Optional[Dict[str, Dict[str, float]]] = None,
-        threshold: float = 0.5,
+        threshold: float = 0.7,
     ) -> Dict[str, Any]:
         """Run ROI classification. Returns dictionary with per-side probability and impacted flag.
 

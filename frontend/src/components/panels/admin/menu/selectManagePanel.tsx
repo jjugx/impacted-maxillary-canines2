@@ -42,6 +42,14 @@ const SelectManagePanel = ({
         { id: "users-create", label: "Create User" },
       ],
     },
+    {
+      id: "images",
+      icon: "fa-solid fa-image",
+      label: "Images",
+      children: [
+        { id: "images-list", label: "Corrected Images" },
+      ],
+    },
     // Add more items as needed
   ];
 

@@ -193,10 +193,30 @@ const PredictionPanel = () => {
   const [isInteractiveModalOpen, setIsInteractiveModalOpen] =
     useState<boolean>(false);
 
+  // State for line visibility controls
+  const [lineVisibility, setLineVisibility] = useState({
+    midline: true,
+    sectorLines: true,
+    occlusalPlane: true,
+    canineAxis: true,
+    lateralAxis: true,
+    keypoints: true,
+    roiBoxes: true,
+    angles: true,
+  });
+
   // State for image modal
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalImage, setModalImage] = useState<string>("");
   const [modalTitle, setModalTitle] = useState<string>("");
+
+  // State for keypoint editing
+  const [isEditingKeypoints, setIsEditingKeypoints] = useState<boolean>(false);
+  const [editedKeypoints, setEditedKeypoints] = useState<Keypoint[]>([]);
+  const [isSavingKeypoints, setIsSavingKeypoints] = useState<boolean>(false);
+  const [previewResult, setPreviewResult] = useState<DetectionResult | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState<boolean>(false);
+  const [hasBeenCorrected, setHasBeenCorrected] = useState<boolean>(false);
 
   // Fetch prediction results when component mounts or detectionId changes
   useEffect(() => {
@@ -222,6 +242,11 @@ const PredictionPanel = () => {
             }
           }
           setResult(det);
+          
+          // Check if detection has already been corrected
+          // We'll check this by trying to edit - if it fails, it's already corrected
+          // For now, we'll check by looking for corrected_keypoints in the response if available
+          // Or we can make a separate check, but for simplicity, we'll check on edit attempt
 
           // Set segmentation data if available
           if (response.data.detection.segmentation) {
@@ -283,16 +308,62 @@ const PredictionPanel = () => {
     fetchPredictionResult();
   }, [detectionId, setLoading]);
 
-  // Format date string to localized format
+  // Preview analysis when editedKeypoints change (with debounce)
+  useEffect(() => {
+    if (!isEditingKeypoints || !editedKeypoints || editedKeypoints.length === 0 || !detectionId) {
+      setPreviewResult(null);
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      setIsLoadingPreview(true);
+      try {
+        const response = await axiosInstance.post(
+          `/detection/${detectionId}/keypoints/preview`,
+          { keypoints: editedKeypoints }
+        );
+        
+        if (response.data.status === "success") {
+          // Create preview result object
+          const preview: DetectionResult = {
+            ...result!,
+            keypoints: response.data.keypoints,
+            analysis: {
+              ...response.data.analysis,
+              roi: response.data.roi || result?.analysis?.roi,
+              dental_analysis: response.data.dental_analysis || result?.analysis?.dental_analysis,
+            },
+            prediction_result: response.data.prediction_result,
+          };
+          setPreviewResult(preview);
+        }
+      } catch (error: any) {
+        console.error("Error previewing analysis:", error);
+        setPreviewResult(null);
+      } finally {
+        setIsLoadingPreview(false);
+      }
+    }, 500); // Debounce 500ms
+
+    return () => clearTimeout(timeoutId);
+  }, [editedKeypoints, isEditingKeypoints, detectionId, result]);
+
+  // Format date string to localized format (matching history panel format)
   const formatDate = (dateString: string) => {
-    const options: Intl.DateTimeFormatOptions = {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    };
-    return new Date(dateString).toLocaleDateString(undefined, options);
+    try {
+      const date = new Date(dateString);
+      return new Intl.DateTimeFormat('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Asia/Bangkok'
+      }).format(date);
+    } catch (err) {
+      console.error("Error formatting date:", err);
+      return dateString; // Return original string if formatting fails
+    }
   };
 
   // Navigate back to dashboard
@@ -671,11 +742,394 @@ const PredictionPanel = () => {
           </div>
         </div>
 
+        {/* Preview Analysis Section (shown when editing) */}
+        {isEditingKeypoints && previewResult && previewResult.analysis && (
+          <div className="mt-8 border-2 border-blue-300 rounded-xl p-6 bg-blue-50">
+            <div className="poppins text-lg font-medium mb-4 text-blue-700">
+              <i className="fa-solid fa-eye mr-2"></i>
+              Preview: Detailed Dental Analysis (Not Saved Yet)
+            </div>
+            {/* Use previewResult for display - copy all sections from Detailed Analysis */}
+            {(() => {
+              const displayResult = previewResult;
+              return (
+                <>
+                  {/* ROI Classification Summary */}
+                  {displayResult.analysis.roi && (
+                    <div className="mb-6">
+                      <div className="poppins font-medium text-base mb-2">
+                        ROI Classification (Impaction)
+                      </div>
+                      <div className="bg-white p-4 rounded-lg">
+                        <div className="grid grid-cols-3 gap-4">
+                          <div className="poppins font-medium">Used Source:</div>
+                          <div className="poppins col-span-2 capitalize">
+                            {displayResult.analysis.roi.used_source || "-"}
+                          </div>
+
+                          <div className="poppins font-medium">Impacted sides:</div>
+                          <div className="poppins col-span-2">
+                            {displayResult.analysis.roi.impacted_sides &&
+                            displayResult.analysis.roi.impacted_sides.length > 0
+                              ? displayResult.analysis.roi.impacted_sides.join(", ")
+                              : "None"}
+                          </div>
+
+                          {/* Per-side probabilities */}
+                          {displayResult.analysis.roi.sides && (
+                            <>
+                              {Object.entries(displayResult.analysis.roi.sides).map(
+                                ([side, info]) => (
+                                  <div key={side} className="col-span-3">
+                                    <div className="flex items-center justify-between">
+                                      <div className="poppins font-medium capitalize">
+                                        {side} probability
+                                      </div>
+                                      <div
+                                        className={`poppins text-sm font-medium ${
+                                          info.impacted
+                                            ? "text-red-600"
+                                            : "text-green-600"
+                                        }`}
+                                      >
+                                        {info.impacted ? "Impacted" : "Normal"}
+                                      </div>
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                                      <div
+                                        className={`h-2.5 rounded-full ${
+                                          info.prob >= (displayResult.analysis.roi?.threshold ?? 0.5)
+                                            ? "bg-red-500"
+                                            : "bg-green-500"
+                                        }`}
+                                        style={{ width: `${Math.round(info.prob * 100)}%` }}
+                                      ></div>
+                                    </div>
+                                    <div className="poppins text-xs text-gray-500 mt-1">
+                                      {Math.round(info.prob * 100)}%
+                                    </div>
+                                  </div>
+                                ),
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Legacy Sector Analysis */}
+                  {displayResult.analysis.sector_analysis && (
+                    <div className="mb-6">
+                      <div className="poppins font-medium text-base mb-2">
+                        Sector Analysis
+                      </div>
+                      <div className="bg-white p-4 rounded-lg">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="poppins font-medium">Sector:</div>
+                          <div className="poppins">
+                            Sector {displayResult.analysis.sector_analysis.sector}
+                          </div>
+
+                          <div className="poppins font-medium">Impaction Type:</div>
+                          <div className="poppins font-medium">
+                            {displayResult.analysis.sector_analysis.impaction_type ===
+                            "Palatally impact" ? (
+                              <span className="poppins text-red-600">
+                                {displayResult.analysis.sector_analysis.impaction_type}
+                              </span>
+                            ) : displayResult.analysis.sector_analysis.impaction_type ===
+                              "Mid-alveolar" ? (
+                              <span className="poppins text-orange-600">
+                                {displayResult.analysis.sector_analysis.impaction_type}
+                              </span>
+                            ) : (
+                              <span>
+                                {displayResult.analysis.sector_analysis.impaction_type}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Legacy Canine Assessment */}
+                  {displayResult.analysis.canine_assessment && (
+                    <div className="mb-6">
+                      <h4 className="poppins font-medium text-base mb-2">
+                        Canine Assessment
+                      </h4>
+                      <div className="bg-white p-4 rounded-lg">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="poppins font-medium">
+                            Overlap with Lateral Incisor:
+                          </div>
+                          <div
+                            className={
+                              displayResult.analysis.canine_assessment.overlap === "Yes"
+                                ? "poppins text-red-600"
+                                : "poppins text-green-600"
+                            }
+                          >
+                            {displayResult.analysis.canine_assessment.overlap}
+                          </div>
+
+                          <div className="poppins font-medium">Vertical Height:</div>
+                          <div
+                            className={
+                              displayResult.analysis.canine_assessment.vertical_height.includes(
+                                "Beyond",
+                              )
+                                ? "poppins text-red-600"
+                                : "poppins text-green-600"
+                            }
+                          >
+                            {displayResult.analysis.canine_assessment.vertical_height}
+                          </div>
+
+                          <div className="poppins font-medium">Root Position:</div>
+                          <div
+                            className={
+                              displayResult.analysis.canine_assessment.root_position.includes(
+                                "Above",
+                              )
+                                ? "poppins text-green-600"
+                                : "poppins text-red-600"
+                            }
+                          >
+                            {displayResult.analysis.canine_assessment.root_position}
+                          </div>
+
+                          <div className="font-medium">Eruption Assessment:</div>
+                          <div
+                            className={`font-medium ${
+                              displayResult.analysis.canine_assessment
+                                .eruption_difficulty === "Unfavorable"
+                                ? "poppins text-red-600"
+                                : "poppins text-green-600"
+                            }`}
+                          >
+                            {displayResult.analysis.canine_assessment.eruption_difficulty}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Legacy Angle Measurements */}
+                  {displayResult.analysis.angle_measurements &&
+                    Object.keys(displayResult.analysis.angle_measurements).length > 0 && (
+                      <div className="mb-6">
+                        <h4 className="poppins font-medium text-base mb-2">
+                          Angle and Linear Measurements
+                        </h4>
+                        <div className="bg-white p-4 rounded-lg">
+                          <div className="grid grid-cols-3 gap-4">
+                            {displayResult.analysis.angle_measurements
+                              .angle_with_midline && (
+                              <>
+                                <div className="poppins font-medium">
+                                  Angle with Midline:
+                                </div>
+                                <div className="poppins">
+                                  {displayResult.analysis.angle_measurements.angle_with_midline.value.toFixed(
+                                    2,
+                                  )}
+                                  °
+                                </div>
+                                <div
+                                  className={`poppins font-medium ${
+                                    displayResult.analysis.angle_measurements
+                                      .angle_with_midline.difficulty === "Unfavorable"
+                                      ? "poppins text-red-600"
+                                      : "poppins text-green-600"
+                                  }`}
+                                >
+                                  {
+                                    displayResult.analysis.angle_measurements
+                                      .angle_with_midline.difficulty
+                                  }
+                                  {displayResult.analysis.angle_measurements
+                                    .angle_with_midline.difficulty === "Unfavorable" &&
+                                    " (>31°)"}
+                                </div>
+                              </>
+                            )}
+
+                            {displayResult.analysis.angle_measurements
+                              .angle_with_lateral && (
+                              <>
+                                <div className="poppins font-medium">
+                                  Angle with Lateral Incisor:
+                                </div>
+                                <div className="poppins">
+                                  {displayResult.analysis.angle_measurements.angle_with_lateral.value.toFixed(
+                                    2,
+                                  )}
+                                  °
+                                </div>
+                                <div
+                                  className={`poppins font-medium ${
+                                    displayResult.analysis.angle_measurements
+                                      .angle_with_lateral.difficulty === "Unfavorable"
+                                      ? "poppins text-red-600"
+                                      : "poppins text-green-600"
+                                  }`}
+                                >
+                                  {
+                                    displayResult.analysis.angle_measurements
+                                      .angle_with_lateral.difficulty
+                                  }
+                                  {displayResult.analysis.angle_measurements
+                                    .angle_with_lateral.difficulty === "Unfavorable" &&
+                                    " (>51.47°)"}
+                                </div>
+                              </>
+                            )}
+
+                            {displayResult.analysis.angle_measurements
+                              .angle_with_occlusal && (
+                              <>
+                                <div className="poppins font-medium">
+                                  Angle with Occlusal Plane:
+                                </div>
+                                <div className="poppins">
+                                  {displayResult.analysis.angle_measurements.angle_with_occlusal.value.toFixed(
+                                    2,
+                                  )}
+                                  °
+                                </div>
+                                <div
+                                  className={`poppins font-medium ${
+                                    displayResult.analysis.angle_measurements
+                                      .angle_with_occlusal.difficulty === "Unfavorable"
+                                      ? "poppins text-red-600"
+                                      : "poppins text-green-600"
+                                  }`}
+                                >
+                                  {
+                                    displayResult.analysis.angle_measurements
+                                      .angle_with_occlusal.difficulty
+                                  }
+                                  {displayResult.analysis.angle_measurements
+                                    .angle_with_occlusal.difficulty === "Unfavorable" &&
+                                    " (>132°)"}
+                                </div>
+                              </>
+                            )}
+
+                            {displayResult.analysis.angle_measurements
+                              .distance_to_occlusal !== undefined && (
+                              <>
+                                <div className="poppins font-medium">
+                                  Distance to Occlusal Plane:
+                                </div>
+                                <div className="poppins col-span-2">
+                                  {displayResult.analysis.angle_measurements.distance_to_occlusal.toFixed(
+                                    4,
+                                  ) + " pixel"}
+                                </div>
+                              </>
+                            )}
+
+                            {displayResult.analysis.angle_measurements
+                              .distance_to_midline !== undefined && (
+                              <>
+                                <div className="poppins font-medium">
+                                  Distance to Midline:
+                                </div>
+                                <div className="poppins col-span-2">
+                                  {displayResult.analysis.angle_measurements.distance_to_midline.toFixed(
+                                    4,
+                                  ) + " pixel"}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                  {/* ROI-based Dental Analysis */}
+                  {displayResult.analysis.dental_analysis && (
+                    <div className="mt-8">
+                      <div className="poppins text-lg font-medium mb-2">
+                        ROI-based Dental Analysis
+                      </div>
+                      <div className="bg-white p-4 rounded-lg">
+                        {(() => {
+                          const dental = displayResult.analysis.dental_analysis as DentalAnalysis;
+                          const sides: Array<'right'|'left'> = ['right','left'].filter((s) => (dental as any)[s]) as any;
+                          if (sides.length === 0) {
+                            return <div className="text-gray-600">No ROI-based analysis available.</div>;
+                          }
+                          return (
+                            <div className={`grid gap-6 ${sides.length > 1 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`}>
+                              {sides.map((side) => {
+                                const sideData = (dental as any)[side] as DentalSide;
+                                return (
+                                  <div key={side} className="border rounded-lg p-4">
+                                    <div className="poppins font-medium mb-3 capitalize">{side} side</div>
+                                    {sideData.skipped ? (
+                                      <div className="p-3 bg-yellow-50 border-l-4 border-yellow-400 rounded">
+                                        <div className="text-yellow-700">
+                                          <i className="fa-solid fa-triangle-exclamation mr-2"></i>
+                                          Skipped analysis for this side: {sideData.reason || 'Unknown reason'}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="space-y-4">
+                                        {sideData.sector_classification && (
+                                          <div>
+                                            <div className="poppins font-medium text-sm text-gray-600 mb-1">Sector Classification</div>
+                                            <div className="poppins">
+                                              Sector {sideData.sector_classification.sector} - {sideData.sector_classification.type}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {sideData.assessment && (
+                                          <div>
+                                            <div className="poppins font-medium text-sm text-gray-600 mb-1">Assessment</div>
+                                            <div className="poppins text-sm">
+                                              {sideData.assessment}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Prediction Result Preview */}
+                  <div className="mb-6 mt-6">
+                    <div className="poppins font-medium text-base mb-2">
+                      Prediction Result
+                    </div>
+                    <div className="bg-white p-4 rounded-lg">
+                      <div className="poppins text-lg font-semibold capitalize">
+                        {displayResult.prediction_result || "Unknown"}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
         {/* Detailed Analysis Section */}
         {result.analysis && (
           <div className="mt-8 border rounded-xl p-6">
             <div className="poppins text-lg font-medium mb-4">
-              Detailed Dental Analysis
+              {isEditingKeypoints && previewResult ? "Current Saved Analysis" : "Detailed Dental Analysis"}
             </div>
 
             {/* ROI Classification Summary */}
@@ -1149,8 +1603,48 @@ const PredictionPanel = () => {
 
         {/* Keypoints Table */}
         <div className="mt-8 border rounded-xl p-6">
-          <div className="poppins text-lg font-medium mb-4">
-            Detected Keypoints
+          <div className="flex justify-between items-center mb-4">
+            <div className="poppins text-lg font-medium">
+              Detected Keypoints
+            </div>
+            {result.keypoints && result.keypoints.length > 0 && (
+              <button
+                onClick={async () => {
+                  if (isEditingKeypoints) {
+                    setIsEditingKeypoints(false);
+                    setEditedKeypoints([]);
+                    setPreviewResult(null);
+                  } else {
+                    // Check if already corrected before allowing edit
+                    try {
+                      // Try to start editing - if it fails, it's already corrected
+                      setIsEditingKeypoints(true);
+                      setEditedKeypoints([...result.keypoints]);
+                    } catch (error: any) {
+                      if (error.response?.status === 400 && error.response?.data?.message?.includes('already been corrected')) {
+                        setHasBeenCorrected(true);
+                        alert("This detection has already been corrected. Only one correction is allowed per detection.");
+                        return;
+                      }
+                    }
+                  }
+                }}
+                disabled={hasBeenCorrected}
+                className={`px-4 py-2 rounded-lg transition-colors text-sm ${
+                  hasBeenCorrected 
+                    ? "bg-gray-400 text-white cursor-not-allowed" 
+                    : isEditingKeypoints 
+                      ? "bg-red-500 text-white hover:bg-red-600" 
+                      : "bg-blue-500 text-white hover:bg-blue-600"
+                }`}
+              >
+                {hasBeenCorrected 
+                  ? "Already Corrected" 
+                  : isEditingKeypoints 
+                    ? "Cancel Edit" 
+                    : "Edit Landmarks"}
+              </button>
+            )}
           </div>
 
           {result.keypoints && result.keypoints.length > 0 ? (
@@ -1164,13 +1658,41 @@ const PredictionPanel = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {result.keypoints.map((keypoint, index) => (
+                  {(isEditingKeypoints ? editedKeypoints : result.keypoints).map((keypoint, index) => (
                     <tr key={index} className="border-b">
                       <td className="px-4 py-2 font-medium">
                         {keypoint.label}
                       </td>
                       <td className="px-4 py-2">
-                        ({Math.round(keypoint.x)}, {Math.round(keypoint.y)})
+                        {isEditingKeypoints ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              value={Math.round(keypoint.x)}
+                              onChange={(e) => {
+                                const newKeypoints = [...editedKeypoints];
+                                newKeypoints[index].x = parseFloat(e.target.value) || 0;
+                                setEditedKeypoints(newKeypoints);
+                              }}
+                              className="w-20 px-2 py-1 border rounded text-xs"
+                              placeholder="X"
+                            />
+                            <span>,</span>
+                            <input
+                              type="number"
+                              value={Math.round(keypoint.y)}
+                              onChange={(e) => {
+                                const newKeypoints = [...editedKeypoints];
+                                newKeypoints[index].y = parseFloat(e.target.value) || 0;
+                                setEditedKeypoints(newKeypoints);
+                              }}
+                              className="w-20 px-2 py-1 border rounded text-xs"
+                              placeholder="Y"
+                            />
+                          </div>
+                        ) : (
+                          `(${Math.round(keypoint.x)}, ${Math.round(keypoint.y)})`
+                        )}
                       </td>
                       <td className="px-4 py-2">
                         <div className="flex items-center">
@@ -1197,6 +1719,80 @@ const PredictionPanel = () => {
                   ))}
                 </tbody>
               </table>
+              {isEditingKeypoints && (
+                <div className="mt-4 flex justify-end">
+                  <button
+                    onClick={async () => {
+                      setIsSavingKeypoints(true);
+                      try {
+                        const response = await axiosInstance.put(
+                          `/detection/${detectionId}/keypoints`,
+                          { keypoints: editedKeypoints }
+                        );
+                        
+                        if (response.data.status === "success") {
+                          // Update result with new keypoints and analysis (including ROI and dental_analysis)
+                          setResult({
+                            ...result,
+                            keypoints: response.data.keypoints,
+                            result_path: response.data.result_path || result?.result_path,
+                            analysis: {
+                              ...response.data.analysis,
+                              roi: response.data.roi || result?.analysis?.roi,
+                              dental_analysis: response.data.dental_analysis || result?.analysis?.dental_analysis,
+                            },
+                            prediction_result: response.data.prediction_result,
+                          });
+                          
+                          // Update result image if new path is available
+                          if (response.data.result_path) {
+                            const resultFilename = response.data.result_path;
+                            setResultImage(
+                              `${axiosInstance.defaults.baseURL}/results/${resultFilename}`,
+                            );
+                          }
+                          
+                          setIsEditingKeypoints(false);
+                          setEditedKeypoints([]);
+                          setPreviewResult(null);
+                          setHasBeenCorrected(true);
+                          
+                          // Show success message (you could add a toast notification here)
+                          alert("Landmarks updated and analysis recalculated successfully!");
+                        }
+                      } catch (error: any) {
+                        console.error("Error updating keypoints:", error);
+                        const errorMessage = error.response?.data?.message || "Failed to update landmarks";
+                        alert(errorMessage);
+                        if (errorMessage.includes('already been corrected')) {
+                          setHasBeenCorrected(true);
+                          setIsEditingKeypoints(false);
+                          setEditedKeypoints([]);
+                          setPreviewResult(null);
+                        }
+                      } finally {
+                        setIsSavingKeypoints(false);
+                      }
+                    }}
+                    disabled={isSavingKeypoints || hasBeenCorrected}
+                    className="px-6 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                  >
+                    {isSavingKeypoints ? "Saving..." : "Save & Recalculate"}
+                  </button>
+                  {isLoadingPreview && (
+                    <div className="text-xs text-gray-500 mt-2">
+                      <i className="fa-solid fa-spinner fa-spin mr-1"></i>
+                      Calculating preview...
+                    </div>
+                  )}
+                  {previewResult && !isLoadingPreview && (
+                    <div className="mt-2 text-xs text-green-600">
+                      <i className="fa-solid fa-check-circle mr-1"></i>
+                      Preview ready - Review results below before saving
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <div className="poppins text-center py-4 text-gray-500">
@@ -1323,29 +1919,289 @@ const PredictionPanel = () => {
               </button>
             </div>
 
-            <div className="p-4 flex-grow overflow-auto bg-gray-100">
-              <div className="h-full flex items-center justify-center">
-                <MeasurementCanvasPanel
-                  result={result}
-                  originalImage={originalImage}
-                  fullSize={true}
-                  activeSide={activeSide}
-                />
+            <div className="flex flex-grow overflow-hidden bg-gray-100">
+              {/* Sidebar for line visibility controls */}
+              <div className="w-64 bg-white border-r p-4 overflow-y-auto">
+                <h4 className="text-sm font-semibold text-gray-700 mb-3">
+                  <i className="fa-solid fa-eye mr-2"></i>
+                  Show/Hide Lines
+                </h4>
+                <div className="space-y-2">
+                  <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={lineVisibility.midline}
+                      onChange={(e) =>
+                        setLineVisibility({
+                          ...lineVisibility,
+                          midline: e.target.checked,
+                        })
+                      }
+                      className="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Midline</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={lineVisibility.sectorLines}
+                      onChange={(e) =>
+                        setLineVisibility({
+                          ...lineVisibility,
+                          sectorLines: e.target.checked,
+                        })
+                      }
+                      className="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Sector Lines (L1-L4)</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={lineVisibility.occlusalPlane}
+                      onChange={(e) =>
+                        setLineVisibility({
+                          ...lineVisibility,
+                          occlusalPlane: e.target.checked,
+                        })
+                      }
+                      className="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Occlusal Plane</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={lineVisibility.canineAxis}
+                      onChange={(e) =>
+                        setLineVisibility({
+                          ...lineVisibility,
+                          canineAxis: e.target.checked,
+                        })
+                      }
+                      className="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Canine Axis</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={lineVisibility.lateralAxis}
+                      onChange={(e) =>
+                        setLineVisibility({
+                          ...lineVisibility,
+                          lateralAxis: e.target.checked,
+                        })
+                      }
+                      className="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Lateral Incisor Axis</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={lineVisibility.keypoints}
+                      onChange={(e) =>
+                        setLineVisibility({
+                          ...lineVisibility,
+                          keypoints: e.target.checked,
+                        })
+                      }
+                      className="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Keypoints</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={lineVisibility.roiBoxes}
+                      onChange={(e) =>
+                        setLineVisibility({
+                          ...lineVisibility,
+                          roiBoxes: e.target.checked,
+                        })
+                      }
+                      className="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">ROI Boxes</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={lineVisibility.angles}
+                      onChange={(e) =>
+                        setLineVisibility({
+                          ...lineVisibility,
+                          angles: e.target.checked,
+                        })
+                      }
+                      className="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Angles</span>
+                  </label>
+                </div>
+                <div className="mt-4 pt-4 border-t">
+                  <button
+                    onClick={() =>
+                      setLineVisibility({
+                        midline: true,
+                        sectorLines: true,
+                        occlusalPlane: true,
+                        canineAxis: true,
+                        lateralAxis: true,
+                        keypoints: true,
+                        roiBoxes: true,
+                        angles: true,
+                      })
+                    }
+                    className="w-full px-3 py-1.5 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100 transition"
+                  >
+                    <i className="fa-solid fa-check-double mr-1"></i>
+                    Show All
+                  </button>
+                </div>
+              </div>
+
+              {/* Main canvas area */}
+              <div className="flex-grow overflow-auto p-4">
+                <div className="h-full flex items-center justify-center">
+                  <MeasurementCanvasPanel
+                    result={isEditingKeypoints && previewResult ? previewResult : result}
+                    originalImage={originalImage}
+                    fullSize={true}
+                    activeSide={activeSide}
+                    lineVisibility={lineVisibility}
+                    editable={isEditingKeypoints && !hasBeenCorrected}
+                    editedKeypoints={isEditingKeypoints && editedKeypoints.length > 0 ? editedKeypoints : undefined}
+                    onKeypointsChange={(updatedKeypoints) => {
+                      setEditedKeypoints(updatedKeypoints);
+                    }}
+                  />
+                </div>
               </div>
             </div>
 
-            <div className="p-4 border-t flex justify-between">
+            <div className="p-4 border-t flex justify-between items-center">
               <div className="text-sm text-gray-600">
                 <i className="fa-solid fa-info-circle mr-1"></i>
-                Interactive view shows all analysis lines, angles, and
-                measurements.
+                {isEditingKeypoints ? (
+                  <span>Click and drag keypoints to adjust landmarks. Click "Save & Recalculate" when done.</span>
+                ) : (
+                  <span>Use the sidebar to toggle individual measurement lines on/off.</span>
+                )}
               </div>
-              <button
-                onClick={() => setIsInteractiveModalOpen(false)}
-                className="btn-secondary w-auto"
-              >
-                Close
-              </button>
+              <div className="flex gap-2">
+                {isEditingKeypoints && (
+                  <button
+                    onClick={async () => {
+                      setIsSavingKeypoints(true);
+                      try {
+                        const response = await axiosInstance.put(
+                          `/detection/${detectionId}/keypoints`,
+                          { keypoints: editedKeypoints }
+                        );
+                        
+                        if (response.data.status === "success") {
+                          // Update result with new keypoints and analysis (including ROI and dental_analysis)
+                          setResult({
+                            ...result,
+                            keypoints: response.data.keypoints,
+                            result_path: response.data.result_path || result?.result_path,
+                            analysis: {
+                              ...response.data.analysis,
+                              roi: response.data.roi || result?.analysis?.roi,
+                              dental_analysis: response.data.dental_analysis || result?.analysis?.dental_analysis,
+                            },
+                            prediction_result: response.data.prediction_result,
+                          });
+                          
+                          // Update result image if new path is available
+                          if (response.data.result_path) {
+                            const resultFilename = response.data.result_path;
+                            setResultImage(
+                              `${axiosInstance.defaults.baseURL}/results/${resultFilename}`,
+                            );
+                          }
+                          
+                          setIsEditingKeypoints(false);
+                          setEditedKeypoints([]);
+                          setPreviewResult(null);
+                          setHasBeenCorrected(true);
+                          alert("Landmarks updated and analysis recalculated successfully!");
+                        }
+                      } catch (error: any) {
+                        console.error("Error updating keypoints:", error);
+                        const errorMessage = error.response?.data?.message || "Failed to update landmarks";
+                        alert(errorMessage);
+                        if (errorMessage.includes('already been corrected')) {
+                          setHasBeenCorrected(true);
+                          setIsEditingKeypoints(false);
+                          setEditedKeypoints([]);
+                          setPreviewResult(null);
+                        }
+                      } finally {
+                        setIsSavingKeypoints(false);
+                      }
+                    }}
+                    disabled={isSavingKeypoints || hasBeenCorrected}
+                    className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed text-sm"
+                  >
+                    {isSavingKeypoints ? "Saving..." : "Save & Recalculate"}
+                  </button>
+                )}
+                {isEditingKeypoints && isLoadingPreview && (
+                  <div className="text-xs text-gray-500">
+                    <i className="fa-solid fa-spinner fa-spin mr-1"></i>
+                    Calculating...
+                  </div>
+                )}
+                {isEditingKeypoints && previewResult && !isLoadingPreview && (
+                  <div className="text-xs text-green-600">
+                    <i className="fa-solid fa-check-circle mr-1"></i>
+                    Preview ready
+                  </div>
+                )}
+                <button
+                  onClick={async () => {
+                    if (isEditingKeypoints) {
+                      setIsEditingKeypoints(false);
+                      setEditedKeypoints([]);
+                      setPreviewResult(null);
+                    } else {
+                      try {
+                        setIsEditingKeypoints(true);
+                        setEditedKeypoints([...result.keypoints]);
+                      } catch (error: any) {
+                        if (error.response?.status === 400 && error.response?.data?.message?.includes('already been corrected')) {
+                          setHasBeenCorrected(true);
+                          alert("This detection has already been corrected. Only one correction is allowed per detection.");
+                          return;
+                        }
+                      }
+                    }
+                  }}
+                  disabled={hasBeenCorrected}
+                  className={`px-4 py-2 rounded-lg transition-colors text-sm ${
+                    hasBeenCorrected 
+                      ? "bg-gray-400 text-white cursor-not-allowed" 
+                      : isEditingKeypoints 
+                        ? "bg-red-500 text-white hover:bg-red-600" 
+                        : "bg-blue-500 text-white hover:bg-blue-600"
+                  }`}
+                >
+                  {hasBeenCorrected 
+                    ? "Already Corrected" 
+                    : isEditingKeypoints 
+                      ? "Cancel Edit" 
+                      : "Edit Landmarks"}
+                </button>
+                <button
+                  onClick={() => setIsInteractiveModalOpen(false)}
+                  className="btn-secondary w-auto"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

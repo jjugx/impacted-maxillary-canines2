@@ -14,6 +14,11 @@ const ShowUsersPanel = () => {
   // Define Users
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState<string>('');
+  const [deleteConfirm, setDeleteConfirm] = useState<{show: boolean, userId: number | null, username: string}>({
+    show: false,
+    userId: null,
+    username: ''
+  });
 
   useEffect(() => {
     axiosInstance.get('/user/all')
@@ -41,6 +46,37 @@ const ShowUsersPanel = () => {
         }
       })
   }, []) // Removed users from dependency array to prevent infinite loop
+
+  // Function to handle delete user
+  const handleDeleteUser = async (userId: number) => {
+    try {
+      const response = await axiosInstance.delete(`/user/${userId}`);
+      if (response.data.status === 'success') {
+        // Remove user from state
+        setUsers(users.filter(user => user.id !== userId));
+        setDeleteConfirm({ show: false, userId: null, username: '' });
+        setError('');
+      } else {
+        setError(response.data.message || 'Failed to delete user');
+      }
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        setError(error.response?.data?.message || 'An error occurred while deleting user');
+      } else {
+        setError('An unexpected error occurred. Please try again.');
+      }
+    }
+  };
+
+  // Function to show delete confirmation
+  const showDeleteConfirm = (userId: number, username: string) => {
+    setDeleteConfirm({ show: true, userId, username });
+  };
+
+  // Function to cancel delete
+  const cancelDelete = () => {
+    setDeleteConfirm({ show: false, userId: null, username: '' });
+  };
 
   return (
     <div className="px-8 mt-18">
@@ -82,9 +118,15 @@ const ShowUsersPanel = () => {
                 {user.role}
               </div>
               <div className="poppins text-center">
-                <span className="block w-1/4 mx-auto cursor-pointer hover-text-blue">
-                  <i className="fa-solid fa-ellipsis-vertical fa-lg"></i>
-                </span>
+                {user.role !== 'admin' && (
+                  <button
+                    onClick={() => showDeleteConfirm(user.id, user.username)}
+                    className="text-red-500 hover:text-red-700 cursor-pointer"
+                    title="Delete User"
+                  >
+                    <i className="fa-solid fa-trash fa-lg"></i>
+                  </button>
+                )}
               </div>
             </div>
           ))
@@ -94,6 +136,36 @@ const ShowUsersPanel = () => {
           </div>
         )
       }
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm.show && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <div className="flex items-center mb-4">
+              <i className="fa-solid fa-exclamation-triangle text-yellow-500 text-2xl mr-3"></i>
+              <h3 className="text-lg font-semibold text-gray-900">Confirm User Deletion</h3>
+            </div>
+            <p className="text-gray-600 mb-6">
+              Are you sure you want to delete user <strong>{deleteConfirm.username}</strong>? 
+              This action cannot be undone.
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={cancelDelete}
+                className="px-4 py-2 text-gray-600 bg-gray-200 rounded-md hover:bg-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteConfirm.userId && handleDeleteUser(deleteConfirm.userId)}
+                className="px-4 py-2 text-white bg-red-500 rounded-md hover:bg-red-600 transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
