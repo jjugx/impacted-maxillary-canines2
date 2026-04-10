@@ -68,5 +68,5 @@ Maxillary canine impaction is one of the most common dental anomalies after thir
 1. **Clone the Repository:**
 
    ```bash
-   git clone https://github.com/Yummamuang/prediction-of-maxillary-impacted-canine.git
-   cd prediction-of-maxillary-impacted-canine
+   git clone https://github.com/jjugx/impacted-maxillary-canines2.git
+   cd impacted-maxillary-canines2
