@@ -10,6 +10,7 @@ import upload_image from "/upload_image.svg";
 
 // Import history component
 import PredictionHistoryPanel from "./predictionHistoryPanel";
+import { AppTutorialModal } from "../../common/AppTutorialModal";
 
 const Dashboard = () => {
   const { setLoading } = useLoading();
@@ -121,6 +122,7 @@ const Dashboard = () => {
 
   // Error state
   const [error, setError] = useState<string | null>(null);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
 
   // Handle file upload change
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -278,12 +280,54 @@ const Dashboard = () => {
   return (
     <div className="p-4">
       <ToggleMenuPanel />
-      <div className="poppins font-medium heading-text text-xl lg:text-2xl text-center mt-8 lg:mt-12">
-        <span className="mr-2">
-          <i className="fa-sharp fa-solid fa-stars text-blue fa-lg -translate-y-1"></i>
-        </span>
-        <span>AI for prediction of maxillary impacted canine</span>
+      {/* <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-8 lg:mt-12 max-w-4xl mx-auto px-2">
+        <div className="poppins font-medium heading-text text-xl lg:text-2xl text-center">
+          <span className="mr-2">
+            <i className="fa-sharp fa-solid fa-stars text-blue fa-lg -translate-y-1"></i>
+          </span>
+          <span>AI for prediction of maxillary impacted canine</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setTutorialOpen(true)}
+          className="shrink-0 rounded-lg btn-secondary flex items-center text-sm px-3 py-2"
+        >
+          <i className="fa-solid fa-circle-question mr-2"></i>
+          User guide
+        </button>
+      </div> */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 mt-8 lg:mt-12 max-w-7xl mx-auto px-4 w-full">
+        
+        {/* 1. ฝั่งซ้าย: พื้นที่ว่างเพื่อ Balance */}
+        <div className="hidden sm:block"></div>
+
+        {/* 2. ฝั่งกลาง: หัวข้อหลัก */}
+        <div className="poppins font-medium heading-text text-xl lg:text-2xl text-center">
+          <div className="flex items-center justify-center">
+            <span className="mr-2 shrink-0">
+              <i className="fa-sharp fa-solid fa-stars text-blue fa-lg -translate-y-1"></i>
+            </span>
+            <span className="leading-tight">
+              AI for prediction of maxillary impacted canine
+            </span>
+          </div>
+        </div>
+
+        {/* 3. ฝั่งขวา: ปุ่ม User guide (ขนาดเล็กลง + สีเทา) */}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setTutorialOpen(true)}
+           
+            className="shrink-0 rounded-md bg-gray-500 hover:bg-gray-600 text-white flex items-center text-xs px-2 py-1 transition-colors"
+          >
+            <i className="fa-solid fa-circle-question mr-1.5"></i>
+            User guide
+          </button>
+        </div>
+        
       </div>
+
 
       {/* Error message */}
       {error && (
@@ -402,6 +446,11 @@ const Dashboard = () => {
       <div className="mt-12 max-w-4xl mx-auto">
         <PredictionHistoryPanel />
       </div>
+
+      <AppTutorialModal
+        isOpen={tutorialOpen}
+        onClose={() => setTutorialOpen(false)}
+      />
     </div>
   );
 };

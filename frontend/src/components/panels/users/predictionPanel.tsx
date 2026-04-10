@@ -6,6 +6,11 @@ import ToggleMenuPanel from "../admin/menu/toggleMenuPanel";
 import MeasurementCanvasPanel from "./measurementCanvasPanel";
 import { generatePDF } from "../../../utils/reportGenerator";
 import ImageModal from "../../common/ImageModal";
+import { AppTutorialModal } from "../../common/AppTutorialModal";
+import { MethodologyCollapsible } from "../../common/MethodologyCollapsible";
+import { LabelWithHint } from "../../common/InfoHint";
+import { AngleDistanceDisplay } from "./AngleDistanceDisplay";
+import { parameterHelp } from "../../../content/helpContent";
 
 // Type definitions for keypoints
 type Keypoint = {
@@ -152,6 +157,8 @@ type DentalSide = {
   sector_classification?: DentalSector;
   three_factor_assessment?: DentalThreeFactor;
   angles_and_distances?: DentalAnglesAndDistances;
+  /** Optional free-text assessment from some API responses */
+  assessment?: string;
 };
 type DentalAnalysis = {
   right?: DentalSide;
@@ -217,6 +224,7 @@ const PredictionPanel = () => {
   const [previewResult, setPreviewResult] = useState<DetectionResult | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState<boolean>(false);
   const [hasBeenCorrected, setHasBeenCorrected] = useState<boolean>(false);
+  const [tutorialOpen, setTutorialOpen] = useState<boolean>(false);
 
   // Fetch prediction results when component mounts or detectionId changes
   useEffect(() => {
@@ -469,7 +477,39 @@ const PredictionPanel = () => {
           </span>
           <span className="poppins heading-text"> Canine Analysis Results</span>
         </div>
-        <div className="flex gap-4">
+        {/* <div className="flex gap-2 sm:gap-4 flex-wrap justify-end">
+          <button
+            type="button"
+            className="rounded-lg btn-secondary flex items-center"
+            onClick={() => setTutorialOpen(true)}
+          >
+            <i className="fa-solid fa-circle-question mr-2"></i>
+            <span className="hidden sm:inline">User guide</span>
+            <span className="sm:hidden">Guide</span>
+          </button>
+          <button
+            className="rounded-lg btn-primary flex items-center"
+            onClick={handleGoBack}
+          >
+            <span>
+              <i className="fa-solid fa-arrow-left mr-2"></i>
+            </span>
+            <span>Back</span>
+          </button>
+        </div> */}
+        <div className="flex gap-2 sm:gap-4 flex-wrap justify-end">
+          {/* ปุ่ม User guide: ปรับเป็นสีเทาและขนาดเล็กลง (Compact Gray) */}
+          <button
+            type="button"
+            className="rounded-md bg-gray-500 hover:bg-gray-600 text-white flex items-center text-xs px-2.5 py-1.5 transition-colors shadow-sm"
+            onClick={() => setTutorialOpen(true)}
+          >
+            <i className="fa-solid fa-circle-question mr-1.5"></i>
+            <span className="hidden sm:inline">User guide</span>
+            <span className="sm:hidden">Guide</span>
+          </button>
+
+          {/* ปุ่ม Back: คงไว้ตามเดิม (btn-primary) */}
           <button
             className="rounded-lg btn-primary flex items-center"
             onClick={handleGoBack}
@@ -515,6 +555,8 @@ const PredictionPanel = () => {
             </div>
           </div>
         )}
+
+        <MethodologyCollapsible />
 
         {/* Images Panel */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -762,12 +804,22 @@ const PredictionPanel = () => {
                       </div>
                       <div className="bg-white p-4 rounded-lg">
                         <div className="grid grid-cols-3 gap-4">
-                          <div className="poppins font-medium">Used Source:</div>
+                          <LabelWithHint
+                            label="Used Source:"
+                            hintTitle="Analysis source"
+                          >
+                            {parameterHelp.roi_used_source}
+                          </LabelWithHint>
                           <div className="poppins col-span-2 capitalize">
                             {displayResult.analysis.roi.used_source || "-"}
                           </div>
 
-                          <div className="poppins font-medium">Impacted sides:</div>
+                          <LabelWithHint
+                            label="Impacted sides:"
+                            hintTitle="Impacted sides"
+                          >
+                            {parameterHelp.roi_impacted_sides}
+                          </LabelWithHint>
                           <div className="poppins col-span-2">
                             {displayResult.analysis.roi.impacted_sides &&
                             displayResult.analysis.roi.impacted_sides.length > 0
@@ -781,10 +833,13 @@ const PredictionPanel = () => {
                               {Object.entries(displayResult.analysis.roi.sides).map(
                                 ([side, info]) => (
                                   <div key={side} className="col-span-3">
-                                    <div className="flex items-center justify-between">
-                                      <div className="poppins font-medium capitalize">
-                                        {side} probability
-                                      </div>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <LabelWithHint
+                                        label={`${side} probability`}
+                                        hintTitle="ROI probability"
+                                      >
+                                        {parameterHelp.roi_probability}
+                                      </LabelWithHint>
                                       <div
                                         className={`poppins text-sm font-medium ${
                                           info.impacted
@@ -925,128 +980,11 @@ const PredictionPanel = () => {
                           Angle and Linear Measurements
                         </h4>
                         <div className="bg-white p-4 rounded-lg">
-                          <div className="grid grid-cols-3 gap-4">
-                            {displayResult.analysis.angle_measurements
-                              .angle_with_midline && (
-                              <>
-                                <div className="poppins font-medium">
-                                  Angle with Midline:
-                                </div>
-                                <div className="poppins">
-                                  {displayResult.analysis.angle_measurements.angle_with_midline.value.toFixed(
-                                    2,
-                                  )}
-                                  °
-                                </div>
-                                <div
-                                  className={`poppins font-medium ${
-                                    displayResult.analysis.angle_measurements
-                                      .angle_with_midline.difficulty === "Unfavorable"
-                                      ? "poppins text-red-600"
-                                      : "poppins text-green-600"
-                                  }`}
-                                >
-                                  {
-                                    displayResult.analysis.angle_measurements
-                                      .angle_with_midline.difficulty
-                                  }
-                                  {displayResult.analysis.angle_measurements
-                                    .angle_with_midline.difficulty === "Unfavorable" &&
-                                    " (>31°)"}
-                                </div>
-                              </>
-                            )}
-
-                            {displayResult.analysis.angle_measurements
-                              .angle_with_lateral && (
-                              <>
-                                <div className="poppins font-medium">
-                                  Angle with Lateral Incisor:
-                                </div>
-                                <div className="poppins">
-                                  {displayResult.analysis.angle_measurements.angle_with_lateral.value.toFixed(
-                                    2,
-                                  )}
-                                  °
-                                </div>
-                                <div
-                                  className={`poppins font-medium ${
-                                    displayResult.analysis.angle_measurements
-                                      .angle_with_lateral.difficulty === "Unfavorable"
-                                      ? "poppins text-red-600"
-                                      : "poppins text-green-600"
-                                  }`}
-                                >
-                                  {
-                                    displayResult.analysis.angle_measurements
-                                      .angle_with_lateral.difficulty
-                                  }
-                                  {displayResult.analysis.angle_measurements
-                                    .angle_with_lateral.difficulty === "Unfavorable" &&
-                                    " (>51.47°)"}
-                                </div>
-                              </>
-                            )}
-
-                            {displayResult.analysis.angle_measurements
-                              .angle_with_occlusal && (
-                              <>
-                                <div className="poppins font-medium">
-                                  Angle with Occlusal Plane:
-                                </div>
-                                <div className="poppins">
-                                  {displayResult.analysis.angle_measurements.angle_with_occlusal.value.toFixed(
-                                    2,
-                                  )}
-                                  °
-                                </div>
-                                <div
-                                  className={`poppins font-medium ${
-                                    displayResult.analysis.angle_measurements
-                                      .angle_with_occlusal.difficulty === "Unfavorable"
-                                      ? "poppins text-red-600"
-                                      : "poppins text-green-600"
-                                  }`}
-                                >
-                                  {
-                                    displayResult.analysis.angle_measurements
-                                      .angle_with_occlusal.difficulty
-                                  }
-                                  {displayResult.analysis.angle_measurements
-                                    .angle_with_occlusal.difficulty === "Unfavorable" &&
-                                    " (>132°)"}
-                                </div>
-                              </>
-                            )}
-
-                            {displayResult.analysis.angle_measurements
-                              .distance_to_occlusal !== undefined && (
-                              <>
-                                <div className="poppins font-medium">
-                                  Distance to Occlusal Plane:
-                                </div>
-                                <div className="poppins col-span-2">
-                                  {displayResult.analysis.angle_measurements.distance_to_occlusal.toFixed(
-                                    4,
-                                  ) + " pixel"}
-                                </div>
-                              </>
-                            )}
-
-                            {displayResult.analysis.angle_measurements
-                              .distance_to_midline !== undefined && (
-                              <>
-                                <div className="poppins font-medium">
-                                  Distance to Midline:
-                                </div>
-                                <div className="poppins col-span-2">
-                                  {displayResult.analysis.angle_measurements.distance_to_midline.toFixed(
-                                    4,
-                                  ) + " pixel"}
-                                </div>
-                              </>
-                            )}
-                          </div>
+                          <AngleDistanceDisplay
+                            measurements={displayResult.analysis.angle_measurements}
+                            showThresholdSuffix
+                            distanceDecimals={4}
+                          />
                         </div>
                       </div>
                     )}
@@ -1084,7 +1022,7 @@ const PredictionPanel = () => {
                                           <div>
                                             <div className="poppins font-medium text-sm text-gray-600 mb-1">Sector Classification</div>
                                             <div className="poppins">
-                                              Sector {sideData.sector_classification.sector} - {sideData.sector_classification.type}
+                                              Sector {sideData.sector_classification.sector} — {sideData.sector_classification.impaction_type}
                                             </div>
                                           </div>
                                         )}
@@ -1140,12 +1078,22 @@ const PredictionPanel = () => {
                 </div>
                 <div className="bg-gray-50 p-4 rounded-lg">
                   <div className="grid grid-cols-3 gap-4">
-                    <div className="poppins font-medium">Used Source:</div>
+                    <LabelWithHint
+                      label="Used Source:"
+                      hintTitle="Analysis source"
+                    >
+                      {parameterHelp.roi_used_source}
+                    </LabelWithHint>
                     <div className="poppins col-span-2 capitalize">
                       {result.analysis.roi.used_source || "-"}
                     </div>
 
-                    <div className="poppins font-medium">Impacted sides:</div>
+                    <LabelWithHint
+                      label="Impacted sides:"
+                      hintTitle="Impacted sides"
+                    >
+                      {parameterHelp.roi_impacted_sides}
+                    </LabelWithHint>
                     <div className="poppins col-span-2">
                       {result.analysis.roi.impacted_sides &&
                       result.analysis.roi.impacted_sides.length > 0
@@ -1159,10 +1107,13 @@ const PredictionPanel = () => {
                         {Object.entries(result.analysis.roi.sides).map(
                           ([side, info]) => (
                             <div key={side} className="col-span-3">
-                              <div className="flex items-center justify-between">
-                                <div className="poppins font-medium capitalize">
-                                  {side} probability
-                                </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <LabelWithHint
+                                  label={`${side} probability`}
+                                  hintTitle="ROI probability"
+                                >
+                                  {parameterHelp.roi_probability}
+                                </LabelWithHint>
                                 <div
                                   className={`poppins text-sm font-medium ${
                                     info.impacted
@@ -1303,128 +1254,11 @@ const PredictionPanel = () => {
                     Angle and Linear Measurements
                   </h4>
                   <div className="bg-gray-50 p-4 rounded-lg">
-                    <div className="grid grid-cols-3 gap-4">
-                      {result.analysis.angle_measurements
-                        .angle_with_midline && (
-                        <>
-                          <div className="poppins font-medium">
-                            Angle with Midline:
-                          </div>
-                          <div className="poppins">
-                            {result.analysis.angle_measurements.angle_with_midline.value.toFixed(
-                              2,
-                            )}
-                            °
-                          </div>
-                          <div
-                            className={`poppins font-medium ${
-                              result.analysis.angle_measurements
-                                .angle_with_midline.difficulty === "Unfavorable"
-                                ? "poppins text-red-600"
-                                : "poppins text-green-600"
-                            }`}
-                          >
-                            {
-                              result.analysis.angle_measurements
-                                .angle_with_midline.difficulty
-                            }
-                            {result.analysis.angle_measurements
-                              .angle_with_midline.difficulty === "Unfavorable" &&
-                              " (>31°)"}
-                          </div>
-                        </>
-                      )}
-
-                      {result.analysis.angle_measurements
-                        .angle_with_lateral && (
-                        <>
-                          <div className="poppins font-medium">
-                            Angle with Lateral Incisor:
-                          </div>
-                          <div className="poppins">
-                            {result.analysis.angle_measurements.angle_with_lateral.value.toFixed(
-                              2,
-                            )}
-                            °
-                          </div>
-                          <div
-                            className={`poppins font-medium ${
-                              result.analysis.angle_measurements
-                                .angle_with_lateral.difficulty === "Unfavorable"
-                                ? "poppins text-red-600"
-                                : "poppins text-green-600"
-                            }`}
-                          >
-                            {
-                              result.analysis.angle_measurements
-                                .angle_with_lateral.difficulty
-                            }
-                            {result.analysis.angle_measurements
-                              .angle_with_lateral.difficulty === "Unfavorable" &&
-                              " (>51.47°)"}
-                          </div>
-                        </>
-                      )}
-
-                      {result.analysis.angle_measurements
-                        .angle_with_occlusal && (
-                        <>
-                          <div className="poppins font-medium">
-                            Angle with Occlusal Plane:
-                          </div>
-                          <div className="poppins">
-                            {result.analysis.angle_measurements.angle_with_occlusal.value.toFixed(
-                              2,
-                            )}
-                            °
-                          </div>
-                          <div
-                            className={`poppins font-medium ${
-                              result.analysis.angle_measurements
-                                .angle_with_occlusal.difficulty === "Unfavorable"
-                                ? "poppins text-red-600"
-                                : "poppins text-green-600"
-                            }`}
-                          >
-                            {
-                              result.analysis.angle_measurements
-                                .angle_with_occlusal.difficulty
-                            }
-                            {result.analysis.angle_measurements
-                              .angle_with_occlusal.difficulty === "Unfavorable" &&
-                              " (>132°)"}
-                          </div>
-                        </>
-                      )}
-
-                      {result.analysis.angle_measurements
-                        .distance_to_occlusal !== undefined && (
-                        <>
-                          <div className="poppins font-medium">
-                            Distance to Occlusal Plane:
-                          </div>
-                          <div className="poppins col-span-2">
-                            {result.analysis.angle_measurements.distance_to_occlusal.toFixed(
-                              4,
-                            ) + " pixel"}
-                          </div>
-                        </>
-                      )}
-
-                      {result.analysis.angle_measurements
-                        .distance_to_midline !== undefined && (
-                        <>
-                          <div className="poppins font-medium">
-                            Distance to Midline:
-                          </div>
-                          <div className="poppins col-span-2">
-                            {result.analysis.angle_measurements.distance_to_midline.toFixed(
-                              4,
-                            ) + " pixel"}
-                          </div>
-                        </>
-                      )}
-                    </div>
+                    <AngleDistanceDisplay
+                      measurements={result.analysis.angle_measurements}
+                      showThresholdSuffix
+                      distanceDecimals={4}
+                    />
                   </div>
                 </div>
               )}
@@ -1505,51 +1339,10 @@ const PredictionPanel = () => {
                                   {sideData.angles_and_distances && (
                                     <div>
                                       <div className="poppins font-medium text-base mb-2">Angles and Distances</div>
-                                      <div className="grid grid-cols-3 gap-4">
-                                        {sideData.angles_and_distances.angle_with_midline && (
-                                          <>
-                                            <div className="poppins font-medium">Angle with Midline:</div>
-                                            <div className="poppins">{sideData.angles_and_distances.angle_with_midline.value.toFixed(2)}°</div>
-                                            <div className={`poppins font-medium ${sideData.angles_and_distances.angle_with_midline.difficulty === 'Difficult' ? 'poppins text-red-600' : 'poppins text-green-600'}`}>
-                                              {sideData.angles_and_distances.angle_with_midline.difficulty}
-                                            </div>
-                                          </>
-                                        )}
-
-                                        {sideData.angles_and_distances.angle_with_lateral && (
-                                          <>
-                                            <div className="poppins font-medium">Angle with Lateral Incisor:</div>
-                                            <div className="poppins">{sideData.angles_and_distances.angle_with_lateral.value.toFixed(2)}°</div>
-                                            <div className={`poppins font-medium ${sideData.angles_and_distances.angle_with_lateral.difficulty === 'Difficult' ? 'poppins text-red-600' : 'poppins text-green-600'}`}>
-                                              {sideData.angles_and_distances.angle_with_lateral.difficulty}
-                                            </div>
-                                          </>
-                                        )}
-
-                                        {sideData.angles_and_distances.angle_with_occlusal && (
-                                          <>
-                                            <div className="poppins font-medium">Angle with Occlusal Plane:</div>
-                                            <div className="poppins">{sideData.angles_and_distances.angle_with_occlusal.value.toFixed(2)}°</div>
-                                            <div className={`poppins font-medium ${sideData.angles_and_distances.angle_with_occlusal.difficulty === 'Difficult' ? 'poppins text-red-600' : 'poppins text-green-600'}`}>
-                                              {sideData.angles_and_distances.angle_with_occlusal.difficulty}
-                                            </div>
-                                          </>
-                                        )}
-
-                                        {sideData.angles_and_distances.distance_to_occlusal !== undefined && (
-                                          <>
-                                            <div className="poppins font-medium">Distance to Occlusal Plane:</div>
-                                            <div className="poppins col-span-2">{sideData.angles_and_distances.distance_to_occlusal?.toFixed(2)} pixel</div>
-                                          </>
-                                        )}
-
-                                        {sideData.angles_and_distances.distance_to_midline !== undefined && (
-                                          <>
-                                            <div className="poppins font-medium">Distance to Midline:</div>
-                                            <div className="poppins col-span-2">{sideData.angles_and_distances.distance_to_midline?.toFixed(2)} pixel</div>
-                                          </>
-                                        )}
-                                      </div>
+                                      <AngleDistanceDisplay
+                                        measurements={sideData.angles_and_distances}
+                                        distanceDecimals={2}
+                                      />
                                     </div>
                                   )}
                                 </div>
@@ -1571,7 +1364,12 @@ const PredictionPanel = () => {
               </h4>
               <div className="bg-blue-light p-4 rounded-lg">
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="poppins font-medium">Difficult Factors:</div>
+                  <LabelWithHint
+                    label="Difficult Factors:"
+                    hintTitle="Difficult factors count"
+                  >
+                    {parameterHelp.difficult_factors}
+                  </LabelWithHint>
                   <div>
                     <span
                       className={
@@ -1589,7 +1387,12 @@ const PredictionPanel = () => {
                     / 6 factors
                   </div>
 
-                  <div className="poppins font-medium">Final Assessment:</div>
+                  <LabelWithHint
+                    label="Final Assessment:"
+                    hintTitle="Final assessment"
+                  >
+                    {parameterHelp.prediction_result}
+                  </LabelWithHint>
                   <div
                     className={`poppins font-medium ${getPredictionColor(result.analysis.prediction_result)}`}
                   >
@@ -2217,6 +2020,11 @@ const PredictionPanel = () => {
           Export Results as PDF
         </button>
       </div>
+
+      <AppTutorialModal
+        isOpen={tutorialOpen}
+        onClose={() => setTutorialOpen(false)}
+      />
     </div>
   );
 };
